@@ -2,7 +2,7 @@ output_dir: ./outputs/cosmos_2b_robotwin
 seed: 42
 
 model:
-  dit_checkpoint: ./checkpoints/cosmos_dit.pt
+  dit_checkpoint: ./checkpoints/cosmos_dit_converted.pt
   # VAE checkpoint 路径 - cosmos-predict2.5 会自动加载
   vae_checkpoint: /home/jwhe/linyihan/CKPT/cosmos/tokenizer.pth
   load_vae_weights: true

@@ -429,24 +429,29 @@ class Block(nn.Module):
 
         if self.use_adaln_lora:
             # AdaLN with LoRA - matches Cosmos checkpoint format
+            # Checkpoint uses: Sequential(SiLU, Linear(x_dim, 256), Linear(256, 3*x_dim))
+            # Named as: adaln_modulation_*.1.weight (first Linear) and adaln_modulation_*.2.weight (second Linear)
             self.adaln_modulation_self_attn = nn.Sequential(
                 nn.SiLU(),
                 nn.Linear(x_dim, adaln_lora_dim, bias=False),
+                nn.Linear(adaln_lora_dim, 3 * x_dim, bias=False),
             )
-            self.adaln_lora_self_attn = nn.Linear(adaln_lora_dim, 3 * x_dim, bias=False)
             self.adaln_modulation_cross_attn = nn.Sequential(
                 nn.SiLU(),
                 nn.Linear(x_dim, adaln_lora_dim, bias=False),
+                nn.Linear(adaln_lora_dim, 3 * x_dim, bias=False),
             )
-            self.adaln_lora_cross_attn = nn.Linear(adaln_lora_dim, 3 * x_dim, bias=False)
             self.adaln_modulation_mlp = nn.Sequential(
                 nn.SiLU(),
                 nn.Linear(x_dim, adaln_lora_dim, bias=False),
+                nn.Linear(adaln_lora_dim, 3 * x_dim, bias=False),
             )
-            self.adaln_lora_mlp = nn.Linear(adaln_lora_dim, 3 * x_dim, bias=False)
-            nn.init.zeros_(self.adaln_lora_self_attn.weight)
-            nn.init.zeros_(self.adaln_lora_cross_attn.weight)
-            nn.init.zeros_(self.adaln_lora_mlp.weight)
+            nn.init.zeros_(self.adaln_modulation_self_attn[1].weight)
+            nn.init.zeros_(self.adaln_modulation_self_attn[2].weight)
+            nn.init.zeros_(self.adaln_modulation_cross_attn[1].weight)
+            nn.init.zeros_(self.adaln_modulation_cross_attn[2].weight)
+            nn.init.zeros_(self.adaln_modulation_mlp[1].weight)
+            nn.init.zeros_(self.adaln_modulation_mlp[2].weight)
         else:
             # Standard AdaLN
             self.adaln_modulation_self_attn = nn.Sequential(
@@ -486,9 +491,10 @@ class Block(nn.Module):
         B, T, H, W, D = x_B_T_H_W_D.shape
 
         if self.use_adaln_lora:
-            shift_sa, scale_sa, gate_sa = self.adaln_lora_self_attn(self.adaln_modulation_self_attn(emb_B_T_D)).chunk(3, dim=-1)
-            shift_ca, scale_ca, gate_ca = self.adaln_lora_cross_attn(self.adaln_modulation_cross_attn(emb_B_T_D)).chunk(3, dim=-1)
-            shift_mlp, scale_mlp, gate_mlp = self.adaln_lora_mlp(self.adaln_modulation_mlp(emb_B_T_D)).chunk(3, dim=-1)
+            # Sequential(SiLU, Linear(x_dim, 256), Linear(256, 3*x_dim))
+            shift_sa, scale_sa, gate_sa = self.adaln_modulation_self_attn(emb_B_T_D).chunk(3, dim=-1)
+            shift_ca, scale_ca, gate_ca = self.adaln_modulation_cross_attn(emb_B_T_D).chunk(3, dim=-1)
+            shift_mlp, scale_mlp, gate_mlp = self.adaln_modulation_mlp(emb_B_T_D).chunk(3, dim=-1)
         else:
             shift_sa, scale_sa, gate_sa = self.adaln_modulation_self_attn(emb_B_T_D).chunk(3, dim=-1)
             shift_ca, scale_ca, gate_ca = self.adaln_modulation_cross_attn(emb_B_T_D).chunk(3, dim=-1)
