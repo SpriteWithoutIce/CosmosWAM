@@ -245,11 +245,13 @@ class FinalLayer(nn.Module):
             bias=False,
         )
         if use_adaln_lora:
+            # LoRA style: modulation projects to adaln_lora_dim, then LoRA expands to output
             self.adaln_modulation = nn.Sequential(
                 nn.SiLU(),
-                nn.Linear(hidden_size, 2 * hidden_size, bias=False),
+                nn.Linear(hidden_size, adaln_lora_dim, bias=False),
             )
-            self.adaln_lora = nn.Linear(adaln_lora_dim, 3 * hidden_size, bias=False)
+            self.adaln_lora = nn.Linear(adaln_lora_dim, 2 * hidden_size, bias=False)
+            nn.init.zeros_(self.adaln_lora.weight)
         else:
             self.adaln_modulation = nn.Sequential(
                 nn.SiLU(),
@@ -262,8 +264,9 @@ class FinalLayer(nn.Module):
         if self.use_wan_fp32_strategy:
             assert emb.dtype == torch.float32
         if self.use_adaln_lora:
-            assert adaln_lora_B_T_3D is not None
-            shift, scale = (self.adaln_modulation(emb) + adaln_lora_B_T_3D[:, :, : 2 * self.hidden_size]).chunk(2, dim=-1)
+            # LoRA style: modulation -> lora -> output
+            modulation_out = self.adaln_modulation(emb)  # [B, T, adaln_lora_dim]
+            shift, scale = self.adaln_lora(modulation_out).chunk(2, dim=-1)
         else:
             shift, scale = self.adaln_modulation(emb).chunk(2, dim=-1)
         shift = rearrange(shift, "b t d -> b t 1 1 d")
