@@ -33,7 +33,7 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
             vae_pth: Path to VAE checkpoint
             temporal_window: Temporal window size
             auto_load: If True, let cosmos-predict2.5 load VAE in __init__.
-                      If False, VAE will be loaded later via load_vae_from_checkpoint.
+                      If False, VAE will be loaded later via load_vae_weights.
         """
         super().__init__()
         # Import from local cosmos checkout
@@ -45,20 +45,48 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
             # Let cosmos-predict2.5 load VAE automatically
             self._impl = _OrigInterface(vae_pth=vae_pth, temporal_window=temporal_window)
         else:
-            # Create interface without loading weights
+            # Create interface without loading weights (pass empty string or None)
+            # cosmos-predict2.5 will create the model structure but without weights
             self._impl = _OrigInterface(vae_pth=None, temporal_window=temporal_window)
-            # Store path for later manual loading
             self._vae_pth = vae_pth
 
-    def load_state_dict(self, state_dict, strict: bool = True):
-        """Load VAE weights manually."""
-        missing, unexpected = self._impl.model.load_state_dict(state_dict, strict=strict)
-        print(f"[VAE] Loaded weights from checkpoint")
-        if missing:
-            print(f"[VAE] Missing keys ({len(missing)}): {missing[:5]}{'...' if len(missing) > 5 else ''}")
-        if unexpected:
-            print(f"[VAE] Unexpected keys ({len(unexpected)}): {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
-        return missing, unexpected
+    def load_vae_weights(self, ckpt_path: str):
+        """Load VAE weights from checkpoint."""
+        import torch
+        state_dict = torch.load(ckpt_path, map_location="cpu")
+        
+        # cosmos-predict2.5's WanVAE uses assign=True for loading
+        # We need to load into self._impl.model
+        if hasattr(self._impl, 'model'):
+            # Try to load directly - WanVAE in cosmos-predict2.5 uses a custom load
+            missing_keys, unexpected_keys = [], []
+            
+            # Get the model state dict
+            model_state = self._impl.model.state_dict() if hasattr(self._impl.model, 'state_dict') else None
+            
+            if model_state is None:
+                # WanVAE might not have standard state_dict, try direct assignment
+                # The checkpoint might have keys that need to be mapped
+                for k, v in state_dict.items():
+                    if hasattr(self._impl.model, k):
+                        setattr(self._impl.model, k, v)
+                    else:
+                        # Try to find matching attribute
+                        missing_keys.append(k)
+                
+                if missing_keys:
+                    print(f"[VAE] Warning: {len(missing_keys)} keys not found in model")
+            else:
+                # Standard state dict loading
+                missing_keys, unexpected_keys = self._impl.model.load_state_dict(state_dict, strict=False)
+            
+            print(f"[VAE] Loaded weights from {ckpt_path}")
+            if missing_keys:
+                print(f"[VAE] Missing keys ({len(missing_keys)}): {missing_keys[:5]}{'...' if len(missing_keys) > 5 else ''}")
+            if unexpected_keys:
+                print(f"[VAE] Unexpected keys ({len(unexpected_keys)}): {unexpected_keys[:5]}{'...' if len(unexpected_keys) > 5 else ''}")
+        else:
+            raise AttributeError("VAE implementation does not have 'model' attribute")
 
     @property
     def spatial_compression_factor(self) -> int:
