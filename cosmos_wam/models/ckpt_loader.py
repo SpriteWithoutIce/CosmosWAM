@@ -24,14 +24,24 @@ def load_dit_from_checkpoint(dit_model: nn.Module, ckpt_path: str, strict: bool 
             new_k = new_k[4:]
         
         # Map x_embedder to patch_embedding
+        # Checkpoint: x_embedder.proj.1.weight -> Model: patch_embedding.proj.0.weight
         if new_k.startswith('x_embedder.'):
             new_k = new_k.replace('x_embedder.', 'patch_embedding.')
+            # Map .1. to .0. for Sequential index
+            new_k = new_k.replace('.proj.1.', '.proj.0.')
         
-        # Map t_embedder to t_embedding (handle nested structure)
-        if new_k.startswith('t_embedder.1.'):
-            new_k = new_k.replace('t_embedder.1.', 't_embedding.')
-        elif new_k.startswith('t_embedder.'):
-            new_k = new_k.replace('t_embedder.', 't_embedding.')
+        # Map t_embedder/t_embedding to MLP structure
+        # Checkpoint: t_embedder.1.linear_1.weight -> Model: t_embedding.layer1.0.linear_1.weight
+        # Checkpoint: t_embedder.1.linear_2.weight -> Model: t_embedding.layer2.weight
+        if new_k.startswith('t_embedder.') or new_k.startswith('t_embedding.'):
+            if 'linear_1' in new_k:
+                # t_embedder.1.linear_1.weight -> t_embedding.layer1.0.linear_1.weight
+                new_k = new_k.replace('t_embedder.1.', 't_embedding.layer1.0.')
+                new_k = new_k.replace('t_embedder.', 't_embedding.layer1.0.')
+            elif 'linear_2' in new_k:
+                # t_embedder.1.linear_2.weight -> t_embedding.layer2.weight
+                new_k = new_k.replace('t_embedder.1.linear_2', 't_embedding.layer2')
+                new_k = new_k.replace('t_embedder.linear_2', 't_embedding.layer2')
         
         # Map t_embedding_norm
         if new_k == 't_embedding_norm.weight' or new_k == 't_embedder_norm.weight':
