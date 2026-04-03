@@ -13,12 +13,17 @@ def run_training(cfg: DictConfig):
     from .models.action_head import ActionDiT
 
     # 1. Build VAE
+    # If load_vae_weights is True, let cosmos-predict2.5 auto-load in __init__
+    # If False, create VAE without weights and load manually (for custom VAE checkpoints)
+    auto_load_vae = cfg.model.get("load_vae_weights", True)
     vae = Wan2pt1VAEInterface(
-        vae_pth=cfg.model.vae_checkpoint,
+        vae_pth=cfg.model.vae_checkpoint if auto_load_vae else None,
         temporal_window=cfg.model.get("vae_temporal_window", 16),
+        auto_load=auto_load_vae,
     )
-    if cfg.model.get("load_vae_weights", True):
-        load_vae_from_checkpoint(vae._impl, cfg.model.vae_checkpoint)
+    if not auto_load_vae and cfg.model.vae_checkpoint:
+        # Manual loading for custom VAE checkpoints
+        load_vae_from_checkpoint(vae, cfg.model.vae_checkpoint)
 
     # 2. Build DiT
     dit = MiniTrainDIT(
