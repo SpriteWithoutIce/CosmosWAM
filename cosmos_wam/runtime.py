@@ -1,0 +1,80 @@
+from omegaconf import DictConfig
+from hydra.utils import instantiate
+import os
+
+from .models.ckpt_loader import load_dit_from_checkpoint, load_vae_from_checkpoint
+from .trainer import CosmosWAMTrainer
+
+
+def run_training(cfg: DictConfig):
+    from .models.cosmos_wam import CosmosWAM
+    from .models.dit_wrapper import MiniTrainDIT, SACConfig
+    from .models.vae_wrapper import Wan2pt1VAEInterface
+    from .models.action_head import ActionDiT
+
+    # 1. Build VAE
+    vae = Wan2pt1VAEInterface(
+        vae_pth=cfg.model.vae_checkpoint,
+        temporal_window=cfg.model.get("vae_temporal_window", 16),
+    )
+    if cfg.model.get("load_vae_weights", True):
+        load_vae_from_checkpoint(vae._impl, cfg.model.vae_checkpoint)
+
+    # 2. Build DiT
+    dit = MiniTrainDIT(
+        max_img_h=cfg.model.dit_config.max_img_h,
+        max_img_w=cfg.model.dit_config.max_img_w,
+        max_frames=cfg.model.dit_config.max_frames,
+        in_channels=cfg.model.dit_config.in_channels,
+        out_channels=cfg.model.dit_config.out_channels,
+        patch_spatial=cfg.model.dit_config.patch_spatial,
+        patch_temporal=cfg.model.dit_config.patch_temporal,
+        model_channels=cfg.model.dit_config.model_channels,
+        num_blocks=cfg.model.dit_config.num_blocks,
+        num_heads=cfg.model.dit_config.num_heads,
+        mlp_ratio=cfg.model.dit_config.get("mlp_ratio", 4.0),
+        atten_backend=cfg.model.dit_config.get("atten_backend", "minimal_a2a"),
+        crossattn_emb_channels=cfg.model.dit_config.crossattn_emb_channels,
+        use_crossattn_projection=cfg.model.dit_config.get("use_crossattn_projection", False),
+        crossattn_proj_in_channels=cfg.model.dit_config.get("crossattn_proj_in_channels", 1024),
+        pos_emb_cls=cfg.model.dit_config.get("pos_emb_cls", "rope3d"),
+        pos_emb_learnable=cfg.model.dit_config.get("pos_emb_learnable", False),
+        rope_h_extrapolation_ratio=cfg.model.dit_config.get("rope_h_extrapolation_ratio", 1.0),
+        rope_w_extrapolation_ratio=cfg.model.dit_config.get("rope_w_extrapolation_ratio", 1.0),
+        rope_t_extrapolation_ratio=cfg.model.dit_config.get("rope_t_extrapolation_ratio", 1.0),
+        use_wan_fp32_strategy=cfg.model.dit_config.get("use_wan_fp32_strategy", False),
+    )
+    load_dit_from_checkpoint(dit, cfg.model.dit_checkpoint, strict=False)
+
+    # Optional: enable gradient checkpointing
+    if cfg.model.get("enable_gradient_checkpointing", True):
+        from .models.dit_wrapper import enable_selective_checkpoint
+        enable_selective_checkpoint(dit, SACConfig(mode="block_wise", every_n_blocks=1), dit.blocks)
+
+    # 3. Build Action Head
+    action_head = ActionDiT(
+        action_dim=cfg.model.action_head.action_dim,
+        hidden_dim=cfg.model.action_head.hidden_dim,
+        num_layers=cfg.model.action_head.num_layers,
+        num_heads=cfg.model.action_head.num_heads,
+        video_dim=cfg.model.action_head.video_dim,
+        mlp_ratio=cfg.model.action_head.get("mlp_ratio", 4.0),
+        actions_per_latent=cfg.model.action_head.get("actions_per_latent", 8),
+    )
+
+    # 4. Build CosmosWAM
+    model = CosmosWAM(
+        dit=dit,
+        vae=vae,
+        action_head=action_head,
+        lambda_action=cfg.model.get("lambda_action", 1.0),
+        num_cond_frames=cfg.model.get("num_cond_frames", 1),
+    )
+
+    # 5. Build Datasets
+    train_dataset = instantiate(cfg.data.train)
+    val_dataset = instantiate(cfg.data.get("val", None)) if "val" in cfg.data else None
+
+    # 6. Train
+    trainer = CosmosWAMTrainer(model=model, train_dataset=train_dataset, val_dataset=val_dataset, cfg=cfg.trainer)
+    trainer.train()
