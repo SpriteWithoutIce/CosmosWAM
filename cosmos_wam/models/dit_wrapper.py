@@ -576,7 +576,7 @@ class MiniTrainDIT(nn.Module):
         out_channels: int,
         patch_spatial: int,
         patch_temporal: int,
-        concat_padding_mask: bool = True,
+        concat_padding_mask: bool = False,  # Disable for checkpoint compatibility
         model_channels: int = 768,
         num_blocks: int = 10,
         num_heads: int = 16,
@@ -593,6 +593,7 @@ class MiniTrainDIT(nn.Module):
         rope_t_extrapolation_ratio: float = 1.0,
         use_wan_fp32_strategy: bool = False,
         adaln_lora_dim: int = 256,
+        use_t_embedding_adaln_lora: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -622,7 +623,7 @@ class MiniTrainDIT(nn.Module):
         self.rope_t_extrapolation_ratio = rope_t_extrapolation_ratio
 
         self.t_embedder = Timesteps(model_channels)
-        self.t_embedding = MLP(model_channels, model_channels, activation="silu")
+        self.t_embedding = MLP(model_channels, model_channels, activation="silu", use_adaln_lora=use_t_embedding_adaln_lora)
         self.t_embedding_norm = RMSNorm(model_channels, eps=1e-6)
 
         self.blocks = nn.ModuleList([

@@ -15,7 +15,7 @@ model:
     max_img_h: 240
     max_img_w: 320
     max_frames: 128
-    in_channels: 16
+    in_channels: 18  # Cosmos checkpoint uses 18 (16 latent + 2 extra channels)
     out_channels: 16
     patch_spatial: 2
     patch_temporal: 1
@@ -34,6 +34,7 @@ model:
     rope_t_extrapolation_ratio: 1.0
     use_wan_fp32_strategy: false
     adaln_lora_dim: 256  # Must match checkpoint format
+    use_t_embedding_adaln_lora: true  # t_embedding outputs 3x for adaLN
 
   action_head:
     action_dim: 16          # RoboTwin 双臂: 16维 (左臂8维 + 右臂8维)
