@@ -1,4 +1,4 @@
-output_dir: ./outputs/cosmos_2b_libero
+output_dir: ./outputs/cosmos_2b_robotwin
 seed: 42
 
 model:
@@ -34,7 +34,7 @@ model:
     use_wan_fp32_strategy: false
 
   action_head:
-    action_dim: 7
+    action_dim: 14
     hidden_dim: 1024
     num_layers: 14
     num_heads: 16

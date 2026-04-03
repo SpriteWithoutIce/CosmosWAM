@@ -189,7 +189,7 @@ nvidia/Cosmos-Predict2.5-2B-Posttrain/
 
 ```bash
 python scripts/extract_ckpt.py \
-    --input /path/to/nvidia/Cosmos-Predict2.5-2B-Posttrain/model.pt \
+    --input /home/jwhe/linyihan/CKPT/cosmos/81edfebe-bd6a-4039-8c1d-737df1a790bf_ema_bf16.pt \
     --output_dir ./checkpoints
 ```
 

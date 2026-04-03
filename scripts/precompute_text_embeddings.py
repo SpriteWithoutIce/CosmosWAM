@@ -5,9 +5,9 @@
 
 Usage:
     python scripts/precompute_text_embeddings.py \
-        --dataset_root /path/to/lerobot_robotwin_eef_clean_50 \
-        --model_path /path/to/Cosmos-Reason1-7B \
-        --output_dir ./data/text_embeds_cache/libero_reason1 \
+        --dataset_root /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test \
+        --model_path /home/jwhe/linyihan/CKPT/Cosmos-Reason1-7B \
+        --output_dir /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/text_embeds_cache/robotwin_reason1 \
         --batch_size 4
 
 Output:
