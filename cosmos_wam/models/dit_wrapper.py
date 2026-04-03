@@ -195,6 +195,7 @@ class Attention(nn.Module):
 # PatchEmbed & FinalLayer
 # ---------------------------------------------------------------------------
 class PatchEmbed(nn.Module):
+    """Cosmos-style PatchEmbed using Linear instead of Conv3d."""
     def __init__(
         self,
         spatial_patch_size: int,
@@ -205,27 +206,33 @@ class PatchEmbed(nn.Module):
         super().__init__()
         self.spatial_patch_size = spatial_patch_size
         self.temporal_patch_size = temporal_patch_size
+        # Cosmos uses a single Linear layer (not Conv3d)
+        # Input: flattened patch
+        patch_dim = in_channels * temporal_patch_size * spatial_patch_size * spatial_patch_size
         self.proj = nn.Sequential(
-            nn.Conv3d(
-                in_channels,
-                out_channels,
-                kernel_size=(temporal_patch_size, spatial_patch_size, spatial_patch_size),
-                stride=(temporal_patch_size, spatial_patch_size, spatial_patch_size),
-            ),
+            nn.Linear(patch_dim, out_channels, bias=False),
         )
-        std = 1.0 / math.sqrt(in_channels * spatial_patch_size * spatial_patch_size * temporal_patch_size)
-        nn.init.trunc_normal_(self.proj[0].weight, std=std, a=-3 * std, b=3 * std)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         assert x.dim() == 5
-        _, _, T, H, W = x.shape
-        assert H % self.spatial_patch_size == 0 and W % self.spatial_patch_size == 0
-        assert T % self.temporal_patch_size == 0
+        B, C, T, H, W = x.shape
+        p_t = self.temporal_patch_size
+        p_s = self.spatial_patch_size
+        
+        # Patchify: [B, C, T, H, W] -> [B, T//p_t, H//p_s, W//p_s, C*p_t*p_s*p_s]
+        x = x.view(B, C, T // p_t, p_t, H // p_s, p_s, W // p_s, p_s)
+        x = x.permute(0, 2, 4, 6, 1, 3, 5, 7).contiguous()
+        x = x.view(B, T // p_t, H // p_s, W // p_s, C * p_t * p_s * p_s)
+        
+        # Apply linear projection
         x = self.proj(x)
+        
+        # Output: [B, T//p_t, H//p_s, W//p_s, out_channels]
         return x
 
 
 class FinalLayer(nn.Module):
+    """Cosmos-style FinalLayer matching checkpoint structure."""
     def __init__(
         self,
         hidden_size: int,
@@ -244,31 +251,21 @@ class FinalLayer(nn.Module):
             spatial_patch_size * spatial_patch_size * temporal_patch_size * out_channels,
             bias=False,
         )
-        if use_adaln_lora:
-            # LoRA style: modulation projects to adaln_lora_dim, then LoRA expands to output
-            self.adaln_modulation = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(hidden_size, adaln_lora_dim, bias=False),
-            )
-            self.adaln_lora = nn.Linear(adaln_lora_dim, 2 * hidden_size, bias=False)
-            nn.init.zeros_(self.adaln_lora.weight)
-        else:
-            self.adaln_modulation = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(hidden_size, 2 * hidden_size, bias=False),
-            )
-        self.use_adaln_lora = use_adaln_lora
-        nn.init.zeros_(self.adaln_modulation[-1].weight)
+        
+        # Cosmos checkpoint: adaln_modulation.1 (Linear to 256), adaln_modulation.2 (Linear to 4096)
+        # Sequential structure: SiLU -> Linear(hidden, 256) -> Linear(256, 4096)
+        self.adaln_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, adaln_lora_dim, bias=False),
+            nn.Linear(adaln_lora_dim, 2 * hidden_size, bias=False),
+        )
+        nn.init.zeros_(self.adaln_modulation[1].weight)
+        nn.init.zeros_(self.adaln_modulation[2].weight)
 
     def forward(self, x, emb, adaln_lora_B_T_3D=None):
         if self.use_wan_fp32_strategy:
             assert emb.dtype == torch.float32
-        if self.use_adaln_lora:
-            # LoRA style: modulation -> lora -> output
-            modulation_out = self.adaln_modulation(emb)  # [B, T, adaln_lora_dim]
-            shift, scale = self.adaln_lora(modulation_out).chunk(2, dim=-1)
-        else:
-            shift, scale = self.adaln_modulation(emb).chunk(2, dim=-1)
+        shift, scale = self.adaln_modulation(emb).chunk(2, dim=-1)
         shift = rearrange(shift, "b t d -> b t 1 1 d")
         scale = rearrange(scale, "b t d -> b t 1 1 d")
         x = self.norm_final(x) * (1 + scale) + shift
@@ -303,30 +300,31 @@ class Timesteps(nn.Module):
 
 
 class MLP(nn.Module):
+    """Cosmos-style MLP with nested structure matching checkpoint."""
     def __init__(self, in_dim: int, out_dim: int, activation: str = "silu", use_adaln_lora: bool = False):
         super().__init__()
-        if activation == "silu":
-            act = nn.SiLU()
-        elif activation == "gelu":
-            act = nn.GELU(approximate="tanh")
-        else:
-            raise ValueError(activation)
-        self.linear_1 = nn.Linear(in_dim, out_dim, bias=False)
-        self.activation = act
-        if use_adaln_lora:
-            self.linear_2 = nn.Linear(out_dim, 3 * out_dim, bias=False)
-        else:
-            self.linear_2 = nn.Linear(out_dim, out_dim, bias=False)
+        # Cosmos checkpoint has: t_embedder.1.linear_1.weight, t_embedder.1.linear_2.weight
+        # This is a nested ModuleList structure
+        self.layer1 = nn.ModuleList([
+            nn.Sequential(),  # Placeholder for any pre-processing
+        ])
+        self.layer1[0].add_module('linear_1', nn.Linear(in_dim, out_dim, bias=False))
+        
+        self.activation = nn.SiLU() if activation == "silu" else nn.GELU(approximate="tanh")
+        
+        # Second linear layer (projects to 3x out_dim for adaLN in Cosmos)
+        self.layer2 = nn.Linear(out_dim, 3 * out_dim if use_adaln_lora else out_dim, bias=False)
         self.use_adaln_lora = use_adaln_lora
+        
         std = 1.0 / math.sqrt(in_dim)
-        nn.init.trunc_normal_(self.linear_1.weight, std=std, a=-3 * std, b=3 * std)
+        nn.init.trunc_normal_(self.layer1[0].linear_1.weight, std=std, a=-3 * std, b=3 * std)
         std = 1.0 / math.sqrt(out_dim)
-        nn.init.trunc_normal_(self.linear_2.weight, std=std, a=-3 * std, b=3 * std)
+        nn.init.trunc_normal_(self.layer2.weight, std=std, a=-3 * std, b=3 * std)
 
     def forward(self, sample: torch.Tensor):
-        emb = self.linear_1(sample)
+        emb = self.layer1[0].linear_1(sample)
         emb = self.activation(emb)
-        emb = self.linear_2(emb)
+        emb = self.layer2(emb)
         if self.use_adaln_lora:
             return sample, emb
         return emb, None
@@ -421,11 +419,12 @@ class Block(nn.Module):
             use_wan_fp32_strategy=use_wan_fp32_strategy,
         )
         self.norm2 = nn.LayerNorm(x_dim, elementwise_affine=False, eps=1e-6)
-        self.mlp = nn.Sequential(
-            nn.Linear(x_dim, mlp_hidden_dim, bias=False),
-            nn.GELU(approximate="tanh"),
-            nn.Linear(mlp_hidden_dim, x_dim, bias=False),
-        )
+        # Cosmos uses named layers: layer1, layer2
+        self.mlp = nn.ModuleDict({
+            'layer1': nn.Linear(x_dim, mlp_hidden_dim, bias=False),
+            'layer2': nn.Linear(mlp_hidden_dim, x_dim, bias=False),
+        })
+        self.mlp_activation = nn.GELU(approximate="tanh")
 
         if self.use_adaln_lora:
             # AdaLN with LoRA - matches Cosmos checkpoint format
@@ -476,10 +475,10 @@ class Block(nn.Module):
         self.reset_parameters()
         self.self_attn.init_weights()
         self.cross_attn.init_weights()
-        std = 1.0 / math.sqrt(self.mlp[0].in_features)
-        nn.init.trunc_normal_(self.mlp[0].weight, std=std, a=-3 * std, b=3 * std)
-        std = 1.0 / math.sqrt(self.mlp[-1].in_features)
-        nn.init.trunc_normal_(self.mlp[-1].weight, std=std, a=-3 * std, b=3 * std)
+        std = 1.0 / math.sqrt(self.mlp['layer1'].in_features)
+        nn.init.trunc_normal_(self.mlp['layer1'].weight, std=std, a=-3 * std, b=3 * std)
+        std = 1.0 / math.sqrt(self.mlp['layer2'].in_features)
+        nn.init.trunc_normal_(self.mlp['layer2'].weight, std=std, a=-3 * std, b=3 * std)
 
     def forward(
         self,
@@ -523,7 +522,8 @@ class Block(nn.Module):
         x_B_T_H_W_D = x_B_T_H_W_D + gate_ca * cross_out
 
         norm_x = modulate(self.norm2(x_B_T_H_W_D), scale_mlp, shift_mlp)
-        x_B_T_H_W_D = x_B_T_H_W_D + gate_mlp * self.mlp(norm_x)
+        mlp_out = self.mlp['layer2'](self.mlp_activation(self.mlp['layer1'](norm_x)))
+        x_B_T_H_W_D = x_B_T_H_W_D + gate_mlp * mlp_out
         return x_B_T_H_W_D
 
 
@@ -650,7 +650,10 @@ class MiniTrainDIT(nn.Module):
 
         self.use_crossattn_projection = use_crossattn_projection
         if use_crossattn_projection:
-            self.crossattn_proj = nn.Linear(crossattn_proj_in_channels, crossattn_emb_channels, bias=False)
+            # Cosmos checkpoint uses Sequential: crossattn_proj.0 (Linear), crossattn_proj.1 (activation)
+            self.crossattn_proj = nn.Sequential(
+                nn.Linear(crossattn_proj_in_channels, crossattn_emb_channels, bias=True),
+            )
         else:
             self.crossattn_proj = None
 
@@ -658,8 +661,8 @@ class MiniTrainDIT(nn.Module):
         if self.concat_padding_mask and padding_mask is not None:
             x_B_C_T_H_W = torch.cat([x_B_C_T_H_W, padding_mask], dim=1)
 
-        x_B_C_T_H_W = self.patch_embedding(x_B_C_T_H_W)
-        x_B_T_H_W_D = x_B_C_T_H_W.permute(0, 2, 3, 4, 1).contiguous()
+        # PatchEmbed now returns [B, T, H, W, D] directly
+        x_B_T_H_W_D = self.patch_embedding(x_B_C_T_H_W)
 
         rope_emb = self.pos_embedder.generate_embeddings(
             x_B_T_H_W_D,
