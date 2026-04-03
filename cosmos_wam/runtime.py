@@ -42,6 +42,7 @@ def run_training(cfg: DictConfig):
         rope_w_extrapolation_ratio=cfg.model.dit_config.get("rope_w_extrapolation_ratio", 1.0),
         rope_t_extrapolation_ratio=cfg.model.dit_config.get("rope_t_extrapolation_ratio", 1.0),
         use_wan_fp32_strategy=cfg.model.dit_config.get("use_wan_fp32_strategy", False),
+        adaln_lora_dim=cfg.model.dit_config.get("adaln_lora_dim", 256),
     )
     load_dit_from_checkpoint(dit, cfg.model.dit_checkpoint, strict=False)
 

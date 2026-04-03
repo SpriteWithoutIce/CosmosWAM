@@ -33,6 +33,7 @@ model:
     rope_w_extrapolation_ratio: 1.0
     rope_t_extrapolation_ratio: 1.0
     use_wan_fp32_strategy: false
+    adaln_lora_dim: 256  # Must match checkpoint format
 
   action_head:
     action_dim: 16          # RoboTwin 双臂: 16维 (左臂8维 + 右臂8维)

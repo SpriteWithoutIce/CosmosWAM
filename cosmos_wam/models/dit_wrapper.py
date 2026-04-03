@@ -395,6 +395,7 @@ class Block(nn.Module):
     ):
         super().__init__()
         self.use_wan_fp32_strategy = use_wan_fp32_strategy
+        self.use_adaln_lora = adaln_lora_dim > 0
         head_dim = x_dim // num_heads
         mlp_hidden_dim = int(x_dim * mlp_ratio)
 
@@ -423,21 +424,43 @@ class Block(nn.Module):
             nn.Linear(mlp_hidden_dim, x_dim, bias=False),
         )
 
-        self.adaln_modulation_self_attn = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(x_dim, 3 * x_dim, bias=False),
-        )
-        self.adaln_modulation_cross_attn = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(x_dim, 3 * x_dim, bias=False),
-        )
-        self.adaln_modulation_mlp = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(x_dim, 3 * x_dim, bias=False),
-        )
-        nn.init.zeros_(self.adaln_modulation_self_attn[-1].weight)
-        nn.init.zeros_(self.adaln_modulation_cross_attn[-1].weight)
-        nn.init.zeros_(self.adaln_modulation_mlp[-1].weight)
+        if self.use_adaln_lora:
+            # AdaLN with LoRA - matches Cosmos checkpoint format
+            self.adaln_modulation_self_attn = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(x_dim, adaln_lora_dim, bias=False),
+            )
+            self.adaln_lora_self_attn = nn.Linear(adaln_lora_dim, 3 * x_dim, bias=False)
+            self.adaln_modulation_cross_attn = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(x_dim, adaln_lora_dim, bias=False),
+            )
+            self.adaln_lora_cross_attn = nn.Linear(adaln_lora_dim, 3 * x_dim, bias=False)
+            self.adaln_modulation_mlp = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(x_dim, adaln_lora_dim, bias=False),
+            )
+            self.adaln_lora_mlp = nn.Linear(adaln_lora_dim, 3 * x_dim, bias=False)
+            nn.init.zeros_(self.adaln_lora_self_attn.weight)
+            nn.init.zeros_(self.adaln_lora_cross_attn.weight)
+            nn.init.zeros_(self.adaln_lora_mlp.weight)
+        else:
+            # Standard AdaLN
+            self.adaln_modulation_self_attn = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(x_dim, 3 * x_dim, bias=False),
+            )
+            self.adaln_modulation_cross_attn = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(x_dim, 3 * x_dim, bias=False),
+            )
+            self.adaln_modulation_mlp = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(x_dim, 3 * x_dim, bias=False),
+            )
+            nn.init.zeros_(self.adaln_modulation_self_attn[-1].weight)
+            nn.init.zeros_(self.adaln_modulation_cross_attn[-1].weight)
+            nn.init.zeros_(self.adaln_modulation_mlp[-1].weight)
 
         self.num_heads = num_heads
 
@@ -459,9 +482,14 @@ class Block(nn.Module):
     ) -> torch.Tensor:
         B, T, H, W, D = x_B_T_H_W_D.shape
 
-        shift_sa, scale_sa, gate_sa = self.adaln_modulation_self_attn(emb_B_T_D).chunk(3, dim=-1)
-        shift_ca, scale_ca, gate_ca = self.adaln_modulation_cross_attn(emb_B_T_D).chunk(3, dim=-1)
-        shift_mlp, scale_mlp, gate_mlp = self.adaln_modulation_mlp(emb_B_T_D).chunk(3, dim=-1)
+        if self.use_adaln_lora:
+            shift_sa, scale_sa, gate_sa = self.adaln_lora_self_attn(self.adaln_modulation_self_attn(emb_B_T_D)).chunk(3, dim=-1)
+            shift_ca, scale_ca, gate_ca = self.adaln_lora_cross_attn(self.adaln_modulation_cross_attn(emb_B_T_D)).chunk(3, dim=-1)
+            shift_mlp, scale_mlp, gate_mlp = self.adaln_lora_mlp(self.adaln_modulation_mlp(emb_B_T_D)).chunk(3, dim=-1)
+        else:
+            shift_sa, scale_sa, gate_sa = self.adaln_modulation_self_attn(emb_B_T_D).chunk(3, dim=-1)
+            shift_ca, scale_ca, gate_ca = self.adaln_modulation_cross_attn(emb_B_T_D).chunk(3, dim=-1)
+            shift_mlp, scale_mlp, gate_mlp = self.adaln_modulation_mlp(emb_B_T_D).chunk(3, dim=-1)
 
         shift_sa = rearrange(shift_sa, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
         scale_sa = rearrange(scale_sa, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
@@ -555,6 +583,7 @@ class MiniTrainDIT(nn.Module):
         rope_w_extrapolation_ratio: float = 1.0,
         rope_t_extrapolation_ratio: float = 1.0,
         use_wan_fp32_strategy: bool = False,
+        adaln_lora_dim: int = 256,
         **kwargs,
     ):
         super().__init__()
@@ -595,6 +624,7 @@ class MiniTrainDIT(nn.Module):
                 mlp_ratio=mlp_ratio,
                 backend=atten_backend,
                 use_wan_fp32_strategy=use_wan_fp32_strategy,
+                adaln_lora_dim=adaln_lora_dim,
             )
             for _ in range(num_blocks)
         ])
@@ -605,6 +635,8 @@ class MiniTrainDIT(nn.Module):
             temporal_patch_size=patch_temporal,
             out_channels=out_channels,
             use_wan_fp32_strategy=use_wan_fp32_strategy,
+            use_adaln_lora=adaln_lora_dim > 0,
+            adaln_lora_dim=adaln_lora_dim,
         )
 
         self.use_crossattn_projection = use_crossattn_projection
