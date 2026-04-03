@@ -29,17 +29,8 @@ pip install -e .
 
 ### 2. Cosmos 依赖
 
-本项目需要 `cosmos_predict2`，有两种方式：
-
-**方式 A**: 使用现有的 cosmos 代码目录
 ```bash
-export PYTHONPATH=/path/to/cosmos-predict2.5-main:$PYTHONPATH
-```
-
-**方式 B**: 作为包安装（如果你已打包）
-```bash
-cd /path/to/cosmos-predict2.5-main
-pip install -e .
+export PYTHONPATH=/home/jwhe/linyihan/cosmos-predict2.5:$PYTHONPATH
 ```
 
 ### 3. 安装其他依赖
