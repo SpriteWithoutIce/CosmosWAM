@@ -87,16 +87,23 @@ class LeRobotDatasetMetadata:
         root: str | Path | None = None,
         revision: str | None = None,
         force_cache_sync: bool = False,
+        local_files_only: bool = False,
     ):
         self.repo_id = repo_id
         self.revision = revision if revision else CODEBASE_VERSION
         self.root = Path(root) if root is not None else HF_LEROBOT_HOME / repo_id
+        self.local_files_only = local_files_only
 
         try:
             if force_cache_sync:
                 raise FileNotFoundError
             self.load_metadata()
         except (FileNotFoundError, NotADirectoryError):
+            if local_files_only:
+                raise FileNotFoundError(
+                    f"Cannot find local dataset at {self.root} and local_files_only=True. "
+                    f"Please ensure the dataset exists locally."
+                )
             # if is_valid_version(self.revision):
             #     self.revision = get_safe_version(self.repo_id, self.revision)
 
@@ -131,6 +138,7 @@ class LeRobotDatasetMetadata:
             local_dir=self.root,
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
+            local_files_only=self.local_files_only,
         )
 
     @property
@@ -355,6 +363,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         video_backend: str | None = None,
         video_codec: Literal["h264", "hevc", "libsvtav1", "h264_nvenc"] = "libsvtav1", 
         is_compute_episode_stats_image: bool = True,
+        local_files_only: bool = False,
     ):
         """
         2 modes are available for instantiating this class, depending on 2 different use cases:
@@ -479,7 +488,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         # Load metadata
         self.meta = LeRobotDatasetMetadata(
-            self.repo_id, self.root, self.revision, force_cache_sync=force_cache_sync
+            self.repo_id, self.root, self.revision, force_cache_sync=force_cache_sync, local_files_only=local_files_only
         )
         if self.episodes is not None and self.meta._version >= packaging.version.parse("v2.1"):
             episodes_stats = [self.meta.episodes_stats[ep_idx] for ep_idx in self.episodes]
@@ -1091,6 +1100,7 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
         tolerances_s: dict | None = None,
         download_videos: bool = True,
         video_backend: str | None = None,
+        local_files_only: bool = False,
     ):
         super().__init__()
         self.dataset_dirs = dataset_dirs
@@ -1113,6 +1123,7 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
                     tolerance_s=self.tolerances_s[ds_name],
                     download_videos=download_videos,
                     video_backend=video_backend,
+                    local_files_only=local_files_only,
                 )
                 self._datasets.append(_dataset)
             except Exception as e:

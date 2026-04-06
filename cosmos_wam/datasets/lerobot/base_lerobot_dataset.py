@@ -50,7 +50,7 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
             ds_root = Path(ds_dir)
             # Use directory name as repo_id for local datasets
             repo_id = ds_root.name
-            meta = LeRobotDatasetMetadata(repo_id=repo_id, root=ds_root)
+            meta = LeRobotDatasetMetadata(repo_id=repo_id, root=ds_root, local_files_only=True)
             metas.append(meta)
 
         fps_list = [m.fps for m in metas]
@@ -106,6 +106,7 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
             dataset_dirs=self.dataset_dirs,
             episodes=episodes,
             delta_timestamps=delta_timestamps,
+            local_files_only=True,
         )
         
         # HACK: lerobot 3.0 will fix this
