@@ -12,7 +12,13 @@ def run_training(cfg: DictConfig):
     from .models.dit_wrapper import MiniTrainDIT, SACConfig
     from .models.vae_wrapper import Wan2pt1VAEInterface
     from .models.action_head import ActionDiT
+    from datetime import datetime
 
+    # Add timestamp to output_dir for unique experiment identification
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_output_dir = cfg.trainer.output_dir
+    cfg.trainer.output_dir = f"{base_output_dir}_{timestamp}"
+    
     # Detect local rank for multi-GPU setup
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     device = torch.device(f"cuda:{local_rank}")
