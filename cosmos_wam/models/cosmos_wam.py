@@ -97,10 +97,12 @@ class CosmosWAM(nn.Module):
 
         target_v = latents - noise_v
         # Video loss: skip conditional frames
+        # pred_v is [B, 16, T, H, W], target_v is [B, 18, T, H, W] (with 2 padding channels)
+        # Only compare the first 16 channels
         if self.num_cond_frames > 0:
-            loss_video = F.mse_loss(pred_v[:, :, self.num_cond_frames :], target_v[:, :, self.num_cond_frames :])
+            loss_video = F.mse_loss(pred_v[:, :, self.num_cond_frames :], target_v[:, :16, self.num_cond_frames :])
         else:
-            loss_video = F.mse_loss(pred_v, target_v)
+            loss_video = F.mse_loss(pred_v, target_v[:, :16])
 
         # -------- Action Rectified Flow --------
         noise_a = torch.randn_like(action)
