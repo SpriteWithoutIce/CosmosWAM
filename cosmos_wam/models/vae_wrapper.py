@@ -49,6 +49,13 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
             # cosmos-predict2.5 will create the model structure but without weights
             self._impl = _OrigInterface(vae_pth=None, temporal_window=temporal_window)
             self._vae_pth = vae_pth
+    
+    def to(self, *args, **kwargs):
+        """Override to() to also move the internal implementation."""
+        super().to(*args, **kwargs)
+        if hasattr(self, '_impl') and self._impl is not None:
+            self._impl = self._impl.to(*args, **kwargs)
+        return self
 
     def load_vae_weights(self, ckpt_path: str):
         """Load VAE weights from checkpoint."""
@@ -101,15 +108,14 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
         return self._impl.latent_ch
 
     def encode(self, state: torch.Tensor) -> torch.Tensor:
-        # Ensure VAE is on the correct device
-        current_device = torch.cuda.current_device()
-        if hasattr(self._impl, 'model'):
-            self._impl.model = self._impl.model.to(f"cuda:{current_device}")
+        # VAE is frozen and should stay on the device it was initialized on
+        # Just ensure input is on the same device as VAE
+        vae_device = next(self._impl.model.parameters()).device if hasattr(self._impl.model, 'parameters') else state.device
+        state = state.to(vae_device)
         return self._impl.encode(state)
 
     def decode(self, latent: torch.Tensor) -> torch.Tensor:
-        # Ensure VAE is on the correct device
-        current_device = torch.cuda.current_device()
-        if hasattr(self._impl, 'model'):
-            self._impl.model = self._impl.model.to(f"cuda:{current_device}")
+        # VAE is frozen and should stay on the device it was initialized on
+        vae_device = next(self._impl.model.parameters()).device if hasattr(self._impl.model, 'parameters') else latent.device
+        latent = latent.to(vae_device)
         return self._impl.decode(latent)

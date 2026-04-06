@@ -1,6 +1,7 @@
 from omegaconf import DictConfig
 from hydra.utils import instantiate
 import os
+import torch
 
 from .models.ckpt_loader import load_dit_from_checkpoint, load_vae_from_checkpoint
 from .trainer import CosmosWAMTrainer
@@ -18,6 +19,13 @@ def run_training(cfg: DictConfig):
         vae_pth=cfg.model.vae_checkpoint,
         temporal_window=cfg.model.get("vae_temporal_window", 16),
     )
+    
+    # Move VAE to the correct device for this process
+    # In multi-GPU setup, each process should have its own VAE copy
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    device = torch.device(f"cuda:{local_rank}")
+    vae = vae.to(device)
+    vae.eval()  # VAE is always frozen
 
     # 2. Build DiT
     dit = MiniTrainDIT(
