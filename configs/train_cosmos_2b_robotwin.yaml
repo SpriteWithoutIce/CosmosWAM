@@ -158,7 +158,7 @@ trainer:
   max_grad_norm: 1.0
   seed: ${seed}
   resume: false
-  mixed_precision: bf16
+  mixed_precision: no  # 关闭混合精度以避免 dtype 不匹配问题
   deepspeed:
     zero_optimization:
       stage: 2
