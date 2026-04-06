@@ -54,11 +54,25 @@ class CosmosWAMTrainer:
         # Handle DeepSpeed configuration
         deepspeed_plugin = None
         if cfg.get("deepspeed"):
-            # Convert OmegaConf dict to DeepSpeedPlugin
             deepspeed_cfg = cfg.deepspeed
             if isinstance(deepspeed_cfg, DictConfig):
                 deepspeed_cfg = OmegaConf.to_container(deepspeed_cfg, resolve=True)
-            deepspeed_plugin = DeepSpeedPlugin(**deepspeed_cfg)
+            
+            # Map nested config to DeepSpeedPlugin parameters
+            ds_kwargs = {}
+            if "zero_optimization" in deepspeed_cfg:
+                zero_cfg = deepspeed_cfg["zero_optimization"]
+                ds_kwargs["zero_stage"] = zero_cfg.get("stage", 2)
+            else:
+                ds_kwargs["zero_stage"] = deepspeed_cfg.get("zero_stage", 2)
+            
+            # Other supported parameters
+            ds_kwargs["gradient_accumulation_steps"] = deepspeed_cfg.get("gradient_accumulation_steps")
+            ds_kwargs["gradient_clipping"] = deepspeed_cfg.get("gradient_clipping")
+            ds_kwargs["offload_optimizer_device"] = deepspeed_cfg.get("offload_optimizer_device")
+            ds_kwargs["offload_param_device"] = deepspeed_cfg.get("offload_param_device")
+            
+            deepspeed_plugin = DeepSpeedPlugin(**ds_kwargs)
         
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.gradient_accumulation_steps,
