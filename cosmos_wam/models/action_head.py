@@ -107,19 +107,23 @@ class ActionBlock(nn.Module):
         norm_x = self.norm1(x) * (1 + scale_sa) + shift_sa
         # Ensure norm_x matches attention weight dtype
         attn_dtype = self.self_attn.in_proj_weight.dtype
-        attn_out, _ = self.self_attn(norm_x.to(dtype=attn_dtype), norm_x.to(dtype=attn_dtype), norm_x.to(dtype=attn_dtype), attn_mask=self_mask)
-        x = x + gate_sa * attn_out
+        norm_x_attn = norm_x.to(dtype=attn_dtype)
+        attn_out, _ = self.self_attn(norm_x_attn, norm_x_attn, norm_x_attn, attn_mask=self_mask)
+        x = x + gate_sa * attn_out.to(dtype=x.dtype)
 
         # Cross-attention to video context with AdaLN
         norm_x = self.norm2(x) * (1 + scale_ca) + shift_ca
         cross_dtype = self.cross_attn.in_proj_weight.dtype
-        cross_out, _ = self.cross_attn(norm_x.to(dtype=cross_dtype), video_ctx.to(dtype=cross_dtype), video_ctx.to(dtype=cross_dtype))
-        x = x + gate_ca * cross_out
+        norm_x_cross = norm_x.to(dtype=cross_dtype)
+        video_ctx_cross = video_ctx.to(dtype=cross_dtype)
+        cross_out, _ = self.cross_attn(norm_x_cross, video_ctx_cross, video_ctx_cross)
+        x = x + gate_ca * cross_out.to(dtype=x.dtype)
 
         # FFN with AdaLN
         norm_x = self.norm3(x) * (1 + scale_mlp) + shift_mlp
         mlp_dtype = self.mlp[0].weight.dtype
-        x = x + gate_mlp * self.mlp(norm_x.to(dtype=mlp_dtype))
+        mlp_out = self.mlp(norm_x.to(dtype=mlp_dtype))
+        x = x + gate_mlp * mlp_out.to(dtype=x.dtype)
         return x
 
 
