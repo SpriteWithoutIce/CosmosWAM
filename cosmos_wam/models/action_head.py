@@ -269,9 +269,11 @@ class ActionDiT(nn.Module):
         device = z_action.device
         dtype = z_action.dtype
 
+        # Ensure timestep is float32 for sinusoidal embedding
         temb = self._build_token_timestep(timestep, batch_size=bsz, seq_len=seq_len, device=device)
 
-        x = self.action_encoder(z_action)
+        # Convert action to match action_encoder weight dtype
+        x = self.action_encoder(z_action.to(dtype=self.action_encoder[0].weight.dtype))
         pos_ids = torch.arange(seq_len, dtype=torch.long, device=device)
         x = x + self.pos_embedding(pos_ids).unsqueeze(0) + temb.to(dtype=dtype)
 
