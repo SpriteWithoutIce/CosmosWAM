@@ -27,15 +27,18 @@ class VideoTokenizerInterface:
 
 
 class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
-    def __init__(self, vae_pth: str, temporal_window: int = 16, auto_load: bool = True):
+    def __init__(self, vae_pth: str, temporal_window: int = 16, auto_load: bool = True, device=None):
         """
         Args:
             vae_pth: Path to VAE checkpoint
             temporal_window: Temporal window size
             auto_load: If True, let cosmos-predict2.5 load VAE in __init__.
                       If False, VAE will be loaded later via load_vae_weights.
+            device: Device to place VAE on. If None, uses cuda:0.
         """
         super().__init__()
+        self._device = device if device is not None else torch.device("cuda:0")
+        
         # Import from local cosmos checkout
         from cosmos_predict2._src.predict2.tokenizers.wan2pt1 import (
             Wan2pt1VAEInterface as _OrigInterface,
@@ -44,10 +47,13 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
         if auto_load:
             # Let cosmos-predict2.5 load VAE automatically
             self._impl = _OrigInterface(vae_pth=vae_pth, temporal_window=temporal_window)
+            # Move VAE to specified device to avoid cuda:0 bottleneck
+            self._impl = self._impl.to(self._device)
         else:
             # Create interface without loading weights (pass empty string or None)
             # cosmos-predict2.5 will create the model structure but without weights
             self._impl = _OrigInterface(vae_pth=None, temporal_window=temporal_window)
+            self._impl = self._impl.to(self._device)
             self._vae_pth = vae_pth
 
     def load_vae_weights(self, ckpt_path: str):
@@ -101,21 +107,12 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
         return self._impl.latent_ch
 
     def encode(self, state: torch.Tensor) -> torch.Tensor:
-        # VAE is frozen and stays on its initialized device (typically cuda:0)
+        # VAE is on specified device (each GPU has its own copy)
         # Move input to VAE's device
-        try:
-            vae_device = next(self._impl.model.parameters()).device
-        except (AttributeError, StopIteration):
-            # Fallback: assume VAE is on cuda:0
-            vae_device = torch.device("cuda:0")
-        state = state.to(device=vae_device, dtype=torch.float32)
+        state = state.to(device=self._device, dtype=torch.float32)
         return self._impl.encode(state)
 
     def decode(self, latent: torch.Tensor) -> torch.Tensor:
-        # VAE is frozen and stays on its initialized device
-        try:
-            vae_device = next(self._impl.model.parameters()).device
-        except (AttributeError, StopIteration):
-            vae_device = torch.device("cuda:0")
-        latent = latent.to(device=vae_device)
+        # VAE is on specified device
+        latent = latent.to(device=self._device)
         return self._impl.decode(latent)
