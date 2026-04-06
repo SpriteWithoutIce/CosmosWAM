@@ -81,7 +81,7 @@ try:
         shape_meta=shape_meta,
         num_frames=33,
         video_size=[240, 320],
-        text_embedding_cache_dir="/home/jwhe/linyihan/datasets/text_embeds_cache/robotwin_reason1",
+        text_embedding_cache_dir="/home/jwhe/linyihan/datasets/text_embeds_cache/robotwin_reason1/adjust_bottle-demo_clean_collect_200-50",
         context_len=512,
         val_set_proportion=0.0,
         is_training_set=True,
