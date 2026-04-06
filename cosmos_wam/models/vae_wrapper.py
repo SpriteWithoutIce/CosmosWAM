@@ -101,11 +101,15 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
         return self._impl.latent_ch
 
     def encode(self, state: torch.Tensor) -> torch.Tensor:
-        # VAE should be on the default device (cuda:0 for process 0, cuda:1 for process 1)
-        # DeepSpeed will handle device placement
+        # Ensure VAE is on the correct device
+        current_device = torch.cuda.current_device()
+        if hasattr(self._impl, 'model'):
+            self._impl.model = self._impl.model.to(f"cuda:{current_device}")
         return self._impl.encode(state)
 
     def decode(self, latent: torch.Tensor) -> torch.Tensor:
-        # VAE should be on the default device (cuda:0 for process 0, cuda:1 for process 1)
-        # DeepSpeed will handle device placement
+        # Ensure VAE is on the correct device
+        current_device = torch.cuda.current_device()
+        if hasattr(self._impl, 'model'):
+            self._impl.model = self._impl.model.to(f"cuda:{current_device}")
         return self._impl.decode(latent)

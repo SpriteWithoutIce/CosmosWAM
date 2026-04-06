@@ -44,19 +44,22 @@ class CosmosWAM(nn.Module):
         context = sample["context"]          # [B, L, D]
         proprio = sample.get("proprio", None)
 
-        # Get target device from DiT (DeepSpeed handles device placement)
-        target_device = next(self.dit.parameters()).device
+        # Get current process's default device
+        target_device = torch.device(f"cuda:{torch.cuda.current_device()}")
+        
+        # Move video to device and ensure float32 for VAE
+        video = video.to(device=target_device, dtype=torch.float32)
 
         with torch.no_grad():
-            # VAE typically outputs float32, convert to bf16 for DiT
+            # VAE encode
             latents = self.vae.encode(video)  # [B, C_latent, T_latent, H_latent, W_latent]
-            latents = latents.to(device=target_device, dtype=torch.bfloat16)
+            # Convert to bf16 for DiT
+            latents = latents.to(dtype=torch.bfloat16)
         
         # Pad latents from 16 to 18 channels to match Cosmos checkpoint
-        # The checkpoint expects 18 channels (16 latent + 2 padding)
         if latents.shape[1] == 16:
-            padding = torch.zeros(2, *latents.shape[2:], device=target_device, dtype=torch.bfloat16)
-            padding = padding.unsqueeze(0).expand(latents.shape[0], -1, -1, -1, -1)  # [B, 2, T, H, W]
+            padding = torch.zeros(latents.shape[0], 2, *latents.shape[2:], 
+                                  device=target_device, dtype=torch.bfloat16)
             latents = torch.cat([latents, padding], dim=1)  # [B, 18, T, H, W]
 
         return {
