@@ -44,8 +44,15 @@ class CosmosWAM(nn.Module):
         context = sample["context"]          # [B, L, D]
         proprio = sample.get("proprio", None)
 
+        # Get target device and dtype from DiT
+        target_device = next(self.dit.parameters()).device
+        target_dtype = next(self.dit.parameters()).dtype
+
         with torch.no_grad():
             latents = self.vae.encode(video)  # [B, C_latent, T_latent, H_latent, W_latent]
+        
+        # Move to DiT's device and convert to DiT's dtype
+        latents = latents.to(device=target_device, dtype=target_dtype)
         
         # Pad latents from 16 to 18 channels to match Cosmos checkpoint
         # The checkpoint expects 18 channels (16 latent + 2 padding)

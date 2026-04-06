@@ -101,21 +101,11 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
         return self._impl.latent_ch
 
     def encode(self, state: torch.Tensor) -> torch.Tensor:
-        # Ensure input is on the same device as the model
-        # Try to get device from encoder's first parameter
-        try:
-            device = next(self._impl.model.encoder.parameters()).device
-        except (AttributeError, StopIteration):
-            # Fallback: use state device or cuda:0
-            device = state.device
-        state = state.to(device)
+        # VAE should be on the default device (cuda:0 for process 0, cuda:1 for process 1)
+        # DeepSpeed will handle device placement
         return self._impl.encode(state)
 
     def decode(self, latent: torch.Tensor) -> torch.Tensor:
-        # Ensure input is on the same device as the model
-        try:
-            device = next(self._impl.model.decoder.parameters()).device
-        except (AttributeError, StopIteration):
-            device = latent.device
-        latent = latent.to(device)
+        # VAE should be on the default device (cuda:0 for process 0, cuda:1 for process 1)
+        # DeepSpeed will handle device placement
         return self._impl.decode(latent)
