@@ -51,7 +51,16 @@ data:
     # RoboTwin 数据路径: 每个子文件夹是一个任务
     # 示例: ./data/lerobot_robotwin_eef_clean_50/close_the_box/
     dataset_dirs:
-      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/adjust_bottle-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/beat_block_hammer-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/blocks_ranking_rgb-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/blocks_ranking_size-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/click_alarmclock-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/click_bell-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/dump_bin_bigbin-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/grab_roller-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/handover_block-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/handover_mic-demo_clean_collect_200-50
     shape_meta:
       images:
         # 只用主视角 cam_high
@@ -106,7 +115,16 @@ data:
   val:
     _target_: cosmos_wam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
     dataset_dirs:
-      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/adjust_bottle-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/beat_block_hammer-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/blocks_ranking_rgb-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/blocks_ranking_size-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/click_alarmclock-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/click_bell-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/dump_bin_bigbin-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/grab_roller-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/handover_block-demo_clean_collect_200-50
+      - /home/jwhe/linyihan/datasets/lerobot_robotwin_eef_test/handover_mic-demo_clean_collect_200-50
     shape_meta: ${data.train.shape_meta}
     num_frames: ${data.train.num_frames}
     global_sample_stride: ${data.train.global_sample_stride}
