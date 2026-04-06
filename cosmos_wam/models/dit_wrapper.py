@@ -292,16 +292,18 @@ class Timesteps(nn.Module):
 
     def forward(self, timesteps_B_T: torch.Tensor) -> torch.Tensor:
         assert timesteps_B_T.ndim == 2
-        timesteps = timesteps_B_T.flatten().float()
+        B, T = timesteps_B_T.shape
+        timesteps = timesteps_B_T.float()  # [B, T]
         half_dim = self.num_channels // 2
         exponent = -math.log(10000) * torch.arange(half_dim, dtype=torch.float32, device=timesteps.device)
         exponent = exponent / (half_dim - 0.0)
         emb = torch.exp(exponent)
-        emb = timesteps[:, None].float() * emb[None, :]
+        # emb: [half_dim], timesteps: [B, T] -> [B, T, half_dim]
+        emb = timesteps[..., None] * emb[None, None, :]
         emb = torch.cat([torch.cos(emb), torch.sin(emb)], dim=-1)
         if self.num_channels % 2 == 1:
             emb = torch.nn.functional.pad(emb, (0, 1))
-        return emb
+        return emb  # [B, T, num_channels]
 
 
 class MLP(nn.Module):
