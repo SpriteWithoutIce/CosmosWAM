@@ -1105,7 +1105,7 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
         super().__init__()
         self.dataset_dirs = dataset_dirs
         ds_roots = [Path(ds_dir) for ds_dir in dataset_dirs]
-        ds_names = [ds_dir for ds_dir in dataset_dirs]
+        ds_names = [ds_root.name for ds_root in ds_roots]  # Use directory name as repo_id
         self.ds_names = ds_names
         self.ds_roots = ds_roots
         self.tolerances_s = tolerances_s if tolerances_s else dict.fromkeys(ds_names, 0.0001)
