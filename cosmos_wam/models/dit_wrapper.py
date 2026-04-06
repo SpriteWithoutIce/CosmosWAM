@@ -563,9 +563,9 @@ def enable_selective_checkpoint(model: MiniTrainDIT, sac_config: SACConfig, bloc
             # Wrap block forward
             orig_forward = block.forward
             def make_forward(orig):
-                def _forward(x, emb, crossattn_emb, rope_emb=None):
+                def _forward(x, emb, crossattn_emb, rope_emb_L_1_1_D=None):
                     return torch.utils.checkpoint.checkpoint(
-                        orig, x, emb, crossattn_emb, rope_emb,
+                        orig, x, emb, crossattn_emb, rope_emb_L_1_1_D,
                         use_reentrant=False,
                     )
                 return _forward
