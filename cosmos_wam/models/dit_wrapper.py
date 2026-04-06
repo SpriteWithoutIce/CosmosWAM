@@ -48,9 +48,12 @@ def apply_rotary_pos_emb(
     """
     cos = torch.cos(freqs).to(q.dtype)
     sin = torch.sin(freqs).to(q.dtype)
+    # Ensure cos/sin can broadcast with q,k: [B, S, H, D]
+    # freqs is [S, 1, D] from VideoPositionEmb, need [1, S, 1, D]
     if cos.ndim == 3:
-        cos = cos.unsqueeze(2)
-        sin = sin.unsqueeze(2)
+        # [S, 1, D] -> [1, S, 1, D] to broadcast with [B, S, H, D]
+        cos = cos.unsqueeze(0)
+        sin = sin.unsqueeze(0)
     q_embed = q * cos + rotate_half(q) * sin
     k_embed = k * cos + rotate_half(k) * sin
     return q_embed, k_embed
