@@ -166,7 +166,7 @@ trainer:
   
   # Weights & Biases logging
   wandb:
-    enabled: true           # 设置为 true 启用 wandb
+    enabled: false           # 设置为 true 启用 wandb
     project: "cosmos-wam-robotwin"  # wandb 项目名称
     name: null              # 实验名称，null 则自动生成
   
