@@ -3,3 +3,4 @@ outputs/
 cosmos_wam.egg.info/
 __pycache__/
 *.egg-info
+*.pyc

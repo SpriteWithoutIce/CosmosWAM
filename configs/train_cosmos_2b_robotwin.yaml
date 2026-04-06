@@ -144,12 +144,12 @@ data:
 
 trainer:
   output_dir: ${output_dir}
-  learning_rate: 2.0e-5
+  learning_rate: 2.0e-4
   action_learning_rate: 2.0e-4
   weight_decay: 0.0
-  batch_size: 4              # 单相机可以增大batch_size
+  batch_size: 16              # 单相机可以增大batch_size
   num_workers: 4
-  num_epochs: 32
+  num_epochs: 10
   max_steps: null  # null: train by epochs; set number: train by steps
   log_every: 10
   save_every: 5000
@@ -162,7 +162,7 @@ trainer:
   
   # Learning rate schedule: "cosine" (default) or "constant"
   lr_schedule: "constant"  # warmup后保持常数学习率
-  warmup_steps: 10         # warmup 步数，之后保持 learning_rate 不变
+  warmup_steps: 100         # warmup 步数，之后保持 learning_rate 不变
   
   # Weights & Biases logging
   wandb:
