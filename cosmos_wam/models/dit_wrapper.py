@@ -273,6 +273,12 @@ class FinalLayer(nn.Module):
     def forward(self, x, emb, adaln_lora_B_T_3D=None):
         if self.use_wan_fp32_strategy:
             assert emb.dtype == torch.float32
+        # Ensure inputs match weight dtype
+        weight_dtype = self.linear.weight.dtype
+        if x.dtype != weight_dtype:
+            x = x.to(dtype=weight_dtype)
+        if emb.dtype != weight_dtype:
+            emb = emb.to(dtype=weight_dtype)
         shift, scale = self.adaln_modulation(emb).chunk(2, dim=-1)
         shift = rearrange(shift, "b t d -> b t 1 1 d")
         scale = rearrange(scale, "b t d -> b t 1 1 d")

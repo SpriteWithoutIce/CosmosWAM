@@ -136,7 +136,7 @@ class CosmosWAM(nn.Module):
             cond_grid = layer_grid[:, : self.num_cond_frames, :, :, :]  # [B, K, H_int, W_int, D]
             video_cond_list.append(cond_grid)
 
-        pred_action = self.action_head(noisy_action, video_cond_list, t_action.to(dtype=action.dtype))
+        pred_action = self.action_head(noisy_action, video_cond_list, t_action)
         loss_action = F.mse_loss(pred_action, target_a)
 
         loss = loss_video + self.lambda_action * loss_action

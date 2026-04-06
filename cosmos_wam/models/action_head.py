@@ -81,6 +81,15 @@ class ActionBlock(nn.Module):
         video_ctx: torch.Tensor,
         self_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        # Ensure all inputs match the model dtype (for mixed precision)
+        target_dtype = self.modulation.weight.dtype
+        if x.dtype != target_dtype:
+            x = x.to(dtype=target_dtype)
+        if t_emb.dtype != target_dtype:
+            t_emb = t_emb.to(dtype=target_dtype)
+        if video_ctx.dtype != target_dtype:
+            video_ctx = video_ctx.to(dtype=target_dtype)
+        
         # t_emb: [B, D] -> modulation: [B, 9*D]
         mods = self.modulation(t_emb).chunk(9, dim=-1)
         shift_sa, scale_sa, gate_sa, shift_ca, scale_ca, gate_ca, shift_mlp, scale_mlp, gate_mlp = mods
@@ -231,19 +240,21 @@ class ActionDiT(nn.Module):
         """video_tokens: [B, K, H, W, D] or [B, K*H*W, D]"""
         if video_tokens.ndim == 5:
             bsz, num_frames, h, w, hidden_dim = video_tokens.shape
-            tokens = video_tokens.to(dtype=dtype).view(bsz, num_frames * h * w, hidden_dim)
+            tokens = video_tokens.view(bsz, num_frames * h * w, hidden_dim)
             spatial_hw = (h, w)
             tokens_per_frame = h * w
         elif video_tokens.ndim == 3:
             bsz, num_tokens, hidden_dim = video_tokens.shape
-            tokens = video_tokens.to(dtype=dtype)
+            tokens = video_tokens
             spatial_hw = None
             tokens_per_frame = 1
             num_frames = num_tokens
         else:
             raise ValueError(f"Unexpected video_tokens shape: {video_tokens.shape}")
 
-        video_ctx = self.video_in(tokens)
+        # Ensure tokens match video_in weight dtype
+        target_dtype = self.video_in[0].weight.dtype
+        video_ctx = self.video_in(tokens.to(dtype=target_dtype))
         video_ctx = video_ctx + self._build_video_positional_encoding(
             batch_size=bsz,
             num_frames=num_frames,
@@ -267,20 +278,21 @@ class ActionDiT(nn.Module):
 
         bsz, seq_len, _ = z_action.shape
         device = z_action.device
-        dtype = z_action.dtype
+        # Get target dtype from model weights
+        target_dtype = self.action_encoder[0].weight.dtype
 
         # Ensure timestep is float32 for sinusoidal embedding
         temb = self._build_token_timestep(timestep, batch_size=bsz, seq_len=seq_len, device=device)
 
-        # Convert action to match action_encoder weight dtype
-        x = self.action_encoder(z_action.to(dtype=self.action_encoder[0].weight.dtype))
+        # Encode action
+        x = self.action_encoder(z_action.to(dtype=target_dtype))
         pos_ids = torch.arange(seq_len, dtype=torch.long, device=device)
-        x = x + self.pos_embedding(pos_ids).unsqueeze(0) + temb.to(dtype=dtype)
+        x = x + self.pos_embedding(pos_ids).unsqueeze(0) + temb
 
         self_mask = self._get_self_mask(num_actions=seq_len, device=device)
 
         for block, layer_video_tokens in zip(self.blocks, video_tokens):
-            video_ctx = self._encode_video_context(layer_video_tokens, dtype=dtype)
+            video_ctx = self._encode_video_context(layer_video_tokens, dtype=target_dtype)
             x = block(x, temb.squeeze(1), video_ctx, self_mask=self_mask)
 
         x = self.out_norm(x)
