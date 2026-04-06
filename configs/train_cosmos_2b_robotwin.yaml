@@ -150,7 +150,7 @@ trainer:
   batch_size: 4              # 单相机可以增大batch_size
   num_workers: 4
   num_epochs: 100
-  max_steps: null
+  max_steps: 100
   log_every: 10
   save_every: 5000
   eval_every: 5000
@@ -158,7 +158,7 @@ trainer:
   max_grad_norm: 1.0
   seed: ${seed}
   resume: false
-  mixed_precision: no  # 关闭混合精度以避免 dtype 不匹配问题
+  mixed_precision: "no"  # 关闭混合精度以避免 dtype 不匹配问题
   deepspeed:
     zero_optimization:
       stage: 2
