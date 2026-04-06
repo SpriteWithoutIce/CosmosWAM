@@ -4,10 +4,13 @@
 import sys
 sys.path.insert(0, '/home/jwhe/linyihan/CosmosWAM')
 
+import os
 import torch
 from cosmos_wam.datasets.lerobot.robot_video_dataset import RobotVideoDataset
 from cosmos_wam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from cosmos_wam.datasets.lerobot.transforms.image import ToTensor
+from cosmos_wam.datasets.lerobot.transforms.action_state_merger import ConcatLeftAlign
+from cosmos_wam.datasets.lerobot.utils.normalizer import save_dataset_stats_to_json
 from torchvision.transforms import Resize
 
 # Test config
@@ -23,6 +26,10 @@ shape_meta = {
     ]
 }
 
+# Create merger and set shape_meta
+merger = ConcatLeftAlign()
+merger.set_shape_meta(shape_meta)
+
 # Create processor
 processor = FastWAMProcessor(
     shape_meta=shape_meta,
@@ -34,7 +41,7 @@ processor = FastWAMProcessor(
     use_stepwise_action_norm=False,
     norm_default_mode="min/max",
     norm_exception_mode=None,
-    action_state_merger=None,  # Will be set below
+    action_state_merger=merger,
     train_transforms={
         "cam_high": [ToTensor(), Resize([240, 320])]
     },
@@ -45,6 +52,30 @@ processor = FastWAMProcessor(
 
 # Test dataset initialization
 try:
+    # Create dummy stats file if not exists
+    stats_path = "./test_dataset_stats.json"
+    if not os.path.exists(stats_path):
+        # Create minimal stats
+        dummy_stats = {
+            "state": {
+                "default": {
+                    "global_min": torch.zeros(16),
+                    "global_max": torch.ones(16),
+                    "global_mean": torch.zeros(16),
+                    "global_std": torch.ones(16),
+                }
+            },
+            "action": {
+                "default": {
+                    "global_min": torch.zeros(16),
+                    "global_max": torch.ones(16),
+                    "global_mean": torch.zeros(16),
+                    "global_std": torch.ones(16),
+                }
+            }
+        }
+        save_dataset_stats_to_json(dummy_stats, stats_path)
+    
     dataset = RobotVideoDataset(
         dataset_dirs=["./data/lerobot_robotwin_eef_clean_50/close_the_box"],  # Replace with actual path
         shape_meta=shape_meta,
@@ -56,6 +87,7 @@ try:
         is_training_set=True,
         concat_multi_camera="horizontal",
         processor=processor,
+        pretrained_norm_stats=stats_path,
     )
     print(f"Dataset initialized successfully! Length: {len(dataset)}")
     
