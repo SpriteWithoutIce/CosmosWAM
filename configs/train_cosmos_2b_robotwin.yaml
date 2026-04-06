@@ -149,7 +149,7 @@ trainer:
   weight_decay: 0.0
   batch_size: 4              # 单相机可以增大batch_size
   num_workers: 4
-  num_epochs: 100
+  num_epochs: 32
   max_steps: null  # null: train by epochs; set number: train by steps
   log_every: 10
   save_every: 5000
