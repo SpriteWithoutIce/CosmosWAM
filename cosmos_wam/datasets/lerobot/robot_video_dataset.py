@@ -45,7 +45,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
     ):
         self.lerobot_dataset = BaseLerobotDataset(
             dataset_dirs=dataset_dirs,
-            shape_meta=OmegaConf.to_container(shape_meta, resolve=True),
+            shape_meta=OmegaConf.to_container(shape_meta, resolve=True) if OmegaConf.is_config(shape_meta) else shape_meta,
             obs_size=num_frames,
             action_size=num_frames - 1,
             val_set_proportion=val_set_proportion,
