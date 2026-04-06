@@ -81,14 +81,16 @@ class CosmosWAM(nn.Module):
         t_video = torch.rand(B, device=device, dtype=torch.float32)
 
         # Add noise: x_t = (1 - t) * noise + t * x0
-        noisy_latents = (1.0 - t_video.view(B, 1, 1, 1, 1)) * noise_v + t_video.view(B, 1, 1, 1, 1) * latents
+        # Ensure t_video is same dtype as latents for mixed precision
+        t_video_bf16 = t_video.view(B, 1, 1, 1, 1).to(dtype=dtype)
+        noisy_latents = (1.0 - t_video_bf16) * noise_v + t_video_bf16 * latents
         # Replace conditional frames with clean latents
         noisy_latents[:, :, : self.num_cond_frames] = latents[:, :, : self.num_cond_frames].clone()
 
         # DiT forward, collecting all intermediate hidden states
         pred_v, hidden_list = self.dit(
             x_B_C_T_H_W=noisy_latents,
-            timesteps_B_T=t_video.unsqueeze(1),
+            timesteps_B_T=t_video.unsqueeze(1).to(dtype=dtype),
             crossattn_emb=context,
             intermediate_feature_ids=list(range(self.dit.num_blocks)),
         )
@@ -104,7 +106,9 @@ class CosmosWAM(nn.Module):
         noise_a = torch.randn_like(action)
         t_action = torch.rand(B, device=device, dtype=torch.float32)
 
-        noisy_action = (1.0 - t_action.view(B, 1, 1)) * noise_a + t_action.view(B, 1, 1) * action
+        # Ensure t_action is same dtype as action for mixed precision
+        t_action_cast = t_action.view(B, 1, 1).to(dtype=action.dtype)
+        noisy_action = (1.0 - t_action_cast) * noise_a + t_action_cast * action
         target_a = action - noise_a
 
         # Extract conditional-frame hidden states from cosmos layers 14-27
@@ -130,7 +134,7 @@ class CosmosWAM(nn.Module):
             cond_grid = layer_grid[:, : self.num_cond_frames, :, :, :]  # [B, K, H_int, W_int, D]
             video_cond_list.append(cond_grid)
 
-        pred_action = self.action_head(noisy_action, video_cond_list, t_action)
+        pred_action = self.action_head(noisy_action, video_cond_list, t_action.to(dtype=action.dtype))
         loss_action = F.mse_loss(pred_action, target_a)
 
         loss = loss_video + self.lambda_action * loss_action
