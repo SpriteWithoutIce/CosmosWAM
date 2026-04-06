@@ -13,15 +13,11 @@ def run_training(cfg: DictConfig):
     from .models.vae_wrapper import Wan2pt1VAEInterface
     from .models.action_head import ActionDiT
 
-    # Detect local rank for multi-GPU setup
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    device = torch.device(f"cuda:{local_rank}")
-
-    # 1. Build VAE - place on each GPU separately to avoid cuda:0 bottleneck
+    # 1. Build VAE - VAE stays on cuda:0 (internal cache tied to device)
+    # Input tensors will be moved to cuda:0 for encoding, results returned to each GPU
     vae = Wan2pt1VAEInterface(
         vae_pth=cfg.model.vae_checkpoint,
         temporal_window=cfg.model.get("vae_temporal_window", 16),
-        device=device,
     )
     vae.eval()  # VAE is always frozen
 
