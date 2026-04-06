@@ -219,6 +219,11 @@ class PatchEmbed(nn.Module):
         p_t = self.temporal_patch_size
         p_s = self.spatial_patch_size
         
+        # Ensure input matches weight dtype for mixed precision
+        weight_dtype = self.proj[0].weight.dtype
+        if x.dtype != weight_dtype:
+            x = x.to(dtype=weight_dtype)
+        
         # Patchify: [B, C, T, H, W] -> [B, T//p_t, H//p_s, W//p_s, C*p_t*p_s*p_s]
         x = x.view(B, C, T // p_t, p_t, H // p_s, p_s, W // p_s, p_s)
         x = x.permute(0, 2, 4, 6, 1, 3, 5, 7).contiguous()
@@ -322,6 +327,10 @@ class MLP(nn.Module):
         nn.init.trunc_normal_(self.layer2.weight, std=std, a=-3 * std, b=3 * std)
 
     def forward(self, sample: torch.Tensor):
+        # Ensure input matches weight dtype for mixed precision
+        weight_dtype = self.layer1[0].linear_1.weight.dtype
+        if sample.dtype != weight_dtype:
+            sample = sample.to(dtype=weight_dtype)
         emb = self.layer1[0].linear_1(sample)
         emb = self.activation(emb)
         emb = self.layer2(emb)
