@@ -47,14 +47,17 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
         if auto_load:
             # Let cosmos-predict2.5 load VAE automatically
             self._impl = _OrigInterface(vae_pth=vae_pth, temporal_window=temporal_window)
-            # Move VAE to specified device to avoid cuda:0 bottleneck
-            self._impl = self._impl.to(self._device)
         else:
             # Create interface without loading weights (pass empty string or None)
             # cosmos-predict2.5 will create the model structure but without weights
             self._impl = _OrigInterface(vae_pth=None, temporal_window=temporal_window)
-            self._impl = self._impl.to(self._device)
             self._vae_pth = vae_pth
+        
+        # Move VAE model to specified device (cosmos VAE interface wraps the actual nn.Module)
+        if hasattr(self._impl, 'model') and isinstance(self._impl.model, nn.Module):
+            self._impl.model = self._impl.model.to(self._device)
+        elif hasattr(self._impl, '_model') and isinstance(self._impl._model, nn.Module):
+            self._impl._model = self._impl._model.to(self._device)
 
     def load_vae_weights(self, ckpt_path: str):
         """Load VAE weights from checkpoint."""
