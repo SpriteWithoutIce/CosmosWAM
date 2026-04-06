@@ -46,6 +46,12 @@ class CosmosWAM(nn.Module):
 
         with torch.no_grad():
             latents = self.vae.encode(video)  # [B, C_latent, T_latent, H_latent, W_latent]
+        
+        # Pad latents from 16 to 18 channels to match Cosmos checkpoint
+        # The checkpoint expects 18 channels (16 latent + 2 padding)
+        if latents.shape[1] == 16:
+            padding = torch.zeros_like(latents[:, :2])  # [B, 2, T, H, W]
+            latents = torch.cat([latents, padding], dim=1)  # [B, 18, T, H, W]
 
         return {
             "latents": latents,

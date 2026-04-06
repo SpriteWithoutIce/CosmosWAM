@@ -15,7 +15,7 @@ model:
     max_img_h: 240
     max_img_w: 320
     max_frames: 128
-    in_channels: 16  # VAE latent channels (Cosmos tokenizer uses 16)
+    in_channels: 18  # Cosmos checkpoint expects 18 (16 latent + 2 padding)
     out_channels: 16
     patch_spatial: 2
     patch_temporal: 1
