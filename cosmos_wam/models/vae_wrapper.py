@@ -102,12 +102,12 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
 
     def encode(self, state: torch.Tensor) -> torch.Tensor:
         # Ensure input is on the same device as the model
-        device = next(self._impl.parameters()).device
+        device = next(self._impl.model.parameters()).device
         state = state.to(device)
         return self._impl.encode(state)
 
     def decode(self, latent: torch.Tensor) -> torch.Tensor:
         # Ensure input is on the same device as the model
-        device = next(self._impl.parameters()).device
+        device = next(self._impl.model.parameters()).device
         latent = latent.to(device)
         return self._impl.decode(latent)
