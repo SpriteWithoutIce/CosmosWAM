@@ -15,16 +15,11 @@ def run_training(cfg: DictConfig):
 
     # 1. Build VAE
     # cosmos-predict2.5 loads VAE automatically in __init__
+    # VAE will be on cuda:0 by default, but we'll handle device in forward pass
     vae = Wan2pt1VAEInterface(
         vae_pth=cfg.model.vae_checkpoint,
         temporal_window=cfg.model.get("vae_temporal_window", 16),
     )
-    
-    # Move VAE to the correct device for this process
-    # In multi-GPU setup, each process should have its own VAE copy
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    device = torch.device(f"cuda:{local_rank}")
-    vae = vae.to(device)
     vae.eval()  # VAE is always frozen
 
     # 2. Build DiT
