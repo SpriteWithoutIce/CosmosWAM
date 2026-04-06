@@ -27,29 +27,41 @@ class VideoTokenizerInterface:
 
 
 class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
-    def __init__(self, vae_pth: str, temporal_window: int = 16, auto_load: bool = True):
+    def __init__(self, vae_pth: str, temporal_window: int = 16, auto_load: bool = True, device=None):
         """
         Args:
             vae_pth: Path to VAE checkpoint
             temporal_window: Temporal window size
             auto_load: If True, let cosmos-predict2.5 load VAE in __init__.
                       If False, VAE will be loaded later via load_vae_weights.
+            device: Target device for VAE. Must be set to ensure internal caches
+                   are created on the correct GPU. If None, uses cuda:0.
         """
         super().__init__()
+        self._device = device if device is not None else torch.device("cuda:0")
         
         # Import from local cosmos checkout
         from cosmos_predict2._src.predict2.tokenizers.wan2pt1 import (
             Wan2pt1VAEInterface as _OrigInterface,
         )
 
-        if auto_load:
-            # Let cosmos-predict2.5 load VAE automatically
-            self._impl = _OrigInterface(vae_pth=vae_pth, temporal_window=temporal_window)
-        else:
-            # Create interface without loading weights (pass empty string or None)
-            # cosmos-predict2.5 will create the model structure but without weights
-            self._impl = _OrigInterface(vae_pth=None, temporal_window=temporal_window)
-            self._vae_pth = vae_pth
+        # Store original device to restore later
+        original_device = torch.cuda.current_device()
+        try:
+            # Set target device before creating VAE so internal caches are on correct GPU
+            torch.cuda.set_device(self._device)
+            
+            if auto_load:
+                # Let cosmos-predict2.5 load VAE automatically
+                self._impl = _OrigInterface(vae_pth=vae_pth, temporal_window=temporal_window)
+            else:
+                # Create interface without loading weights (pass empty string or None)
+                # cosmos-predict2.5 will create the model structure but without weights
+                self._impl = _OrigInterface(vae_pth=None, temporal_window=temporal_window)
+                self._vae_pth = vae_pth
+        finally:
+            # Restore original device
+            torch.cuda.set_device(original_device)
 
     def load_vae_weights(self, ckpt_path: str):
         """Load VAE weights from checkpoint."""
@@ -101,27 +113,13 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
     def latent_ch(self) -> int:
         return self._impl.latent_ch
 
-    @property
-    def _vae_device(self):
-        """Get the device VAE is currently on."""
-        try:
-            return next(self._impl.model.parameters()).device
-        except (AttributeError, StopIteration):
-            return torch.device("cuda:0")
-
     def encode(self, state: torch.Tensor) -> torch.Tensor:
-        # VAE stays on cuda:0 (internal cache tied to device)
-        # Move input to VAE's device, encode, then return to original device
-        orig_device = state.device
-        vae_device = self._vae_device
-        state = state.to(device=vae_device, dtype=torch.float32)
-        latents = self._impl.encode(state)
-        return latents.to(device=orig_device)
+        # VAE is on self._device with internal caches on same device
+        # Just ensure input is on correct device and dtype
+        state = state.to(device=self._device, dtype=torch.float32)
+        return self._impl.encode(state)
 
     def decode(self, latent: torch.Tensor) -> torch.Tensor:
-        # VAE stays on cuda:0
-        orig_device = latent.device
-        vae_device = self._vae_device
-        latent = latent.to(device=vae_device)
-        decoded = self._impl.decode(latent)
-        return decoded.to(device=orig_device)
+        # VAE is on self._device
+        latent = latent.to(device=self._device)
+        return self._impl.decode(latent)
