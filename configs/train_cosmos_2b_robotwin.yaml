@@ -145,7 +145,7 @@ data:
 trainer:
   output_dir: ${output_dir}
   learning_rate: 2.0e-5
-  action_learning_rate: 1.0e-4
+  action_learning_rate: 2.0e-4
   weight_decay: 0.0
   batch_size: 4              # 单相机可以增大batch_size
   num_workers: 4

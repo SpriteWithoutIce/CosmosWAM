@@ -1,4 +1,5 @@
 import os
+import math
 import torch
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
@@ -193,7 +194,6 @@ class CosmosWAMTrainer:
         return LambdaLR(optimizer, lr_lambda)
 
     def train(self):
-        import math
         import time
         from tqdm import tqdm
         
