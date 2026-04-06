@@ -2,7 +2,8 @@ import os
 import torch
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
-from omegaconf import DictConfig
+from accelerate.utils import DeepSpeedPlugin
+from omegaconf import DictConfig, OmegaConf
 
 from .utils.samplers import ResumableEpochSampler
 from .utils.logging_config import get_logger
@@ -50,11 +51,20 @@ class CosmosWAMTrainer:
         self.resume = cfg.get("resume", False)
         self.mixed_precision = str(cfg.get("mixed_precision", "bf16")).strip().lower()
 
+        # Handle DeepSpeed configuration
+        deepspeed_plugin = None
+        if cfg.get("deepspeed"):
+            # Convert OmegaConf dict to DeepSpeedPlugin
+            deepspeed_cfg = cfg.deepspeed
+            if isinstance(deepspeed_cfg, DictConfig):
+                deepspeed_cfg = OmegaConf.to_container(deepspeed_cfg, resolve=True)
+            deepspeed_plugin = DeepSpeedPlugin(**deepspeed_cfg)
+        
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.gradient_accumulation_steps,
             mixed_precision=self.mixed_precision,
             step_scheduler_with_optimizer=False,
-            deepspeed_plugin=cfg.get("deepspeed", None),
+            deepspeed_plugin=deepspeed_plugin,
         )
 
         logger.info(
