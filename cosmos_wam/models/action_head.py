@@ -174,11 +174,13 @@ class ActionDiT(nn.Module):
         seq_len: int,
         device: torch.device,
     ) -> torch.Tensor:
-        t = timestep.to(device=device, dtype=torch.float32)
+        t = timestep.to(device=device)
         if t.ndim == 2 and t.shape[1] == 1:
             t = t[:, 0]
         t = t.clamp(0.0, 1.0)
         temb = _sinusoidal_timestep_embedding(t * max(float(self.timestep_buckets - 1), 1.0), self.hidden_dim)
+        # Ensure temb matches timestep_proj weight dtype for mixed precision
+        temb = temb.to(dtype=self.timestep_proj[0].weight.dtype)
         temb = self.timestep_proj(temb).unsqueeze(1)  # [B, 1, D]
         return temb
 
