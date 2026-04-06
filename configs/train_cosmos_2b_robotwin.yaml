@@ -159,6 +159,17 @@ trainer:
   seed: ${seed}
   resume: false
   mixed_precision: "no"  # 关闭混合精度以避免 dtype 不匹配问题
+  
+  # Learning rate schedule: "cosine" (default) or "constant"
+  lr_schedule: "constant"  # warmup后保持常数学习率
+  warmup_steps: 10         # warmup 步数，之后保持 learning_rate 不变
+  
+  # Weights & Biases logging
+  wandb:
+    enabled: true           # 设置为 true 启用 wandb
+    project: "cosmos-wam-robotwin"  # wandb 项目名称
+    name: null              # 实验名称，null 则自动生成
+  
   deepspeed:
     zero_optimization:
       stage: 2

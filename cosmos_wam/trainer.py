@@ -8,6 +8,14 @@ from omegaconf import DictConfig, OmegaConf
 from .utils.samplers import ResumableEpochSampler
 from .utils.logging_config import get_logger
 
+# Optional wandb import
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
+    wandb = None
+
 logger = get_logger(__name__)
 
 
@@ -107,7 +115,12 @@ class CosmosWAMTrainer:
 
         total_steps = self._estimate_total_steps()
         self.max_steps = total_steps if self.max_steps is None else self.max_steps
-        warmup_steps = int(total_steps * 0.05)
+        # Use explicit warmup_steps if provided, otherwise use 5% of total
+        warmup_steps = cfg.get("warmup_steps", None)
+        if warmup_steps is None:
+            warmup_steps = int(total_steps * 0.05)
+        else:
+            warmup_steps = int(warmup_steps)
         self.scheduler = self._build_scheduler(self.optimizer, total_steps, warmup_steps)
 
         self.global_step = 0
@@ -121,6 +134,18 @@ class CosmosWAMTrainer:
             self.model, self.optimizer, self.train_loader, self.scheduler
         )
         self.optimizer.zero_grad(set_to_none=True)
+        
+        # Initialize wandb if enabled (only on main process)
+        self.use_wandb = HAS_WANDB and cfg.get("wandb", {}).get("enabled", False)
+        if self.use_wandb and self.accelerator.is_main_process:
+            wandb_config = cfg.get("wandb", {})
+            wandb.init(
+                project=wandb_config.get("project", "cosmos-wam"),
+                name=wandb_config.get("name", None),
+                config=OmegaConf.to_container(cfg, resolve=True),
+                dir=self.output_dir,
+            )
+            logger.info("Wandb initialized: project=%s", wandb_config.get("project", "cosmos-wam"))
 
     def _build_loader(self, dataset, worker_init_fn=None):
         sampler = ResumableEpochSampler(
@@ -147,17 +172,49 @@ class CosmosWAMTrainer:
 
     def _build_scheduler(self, optimizer, total_steps, warmup_steps):
         from torch.optim.lr_scheduler import LambdaLR
-
-        def lr_lambda(step):
-            if step < warmup_steps:
-                return float(step) / float(max(1, warmup_steps))
-            progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-            return 0.5 * (1.0 + math.cos(math.pi * progress))
+        
+        # Get scheduler type from config (cosine or constant)
+        lr_schedule = self.cfg.get("lr_schedule", "cosine")
+        
+        if lr_schedule == "constant":
+            # Constant LR with warmup: warmup for warmup_steps, then keep constant
+            def lr_lambda(step):
+                if step < warmup_steps:
+                    return float(step) / float(max(1, warmup_steps))
+                return 1.0  # Keep constant after warmup
+        else:
+            # Cosine annealing with warmup (default)
+            def lr_lambda(step):
+                if step < warmup_steps:
+                    return float(step) / float(max(1, warmup_steps))
+                progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+                return 0.5 * (1.0 + math.cos(math.pi * progress))
 
         return LambdaLR(optimizer, lr_lambda)
 
     def train(self):
         import math
+        import time
+        from tqdm import tqdm
+        
+        # Calculate total steps
+        total_steps = self.max_steps
+        logger.info(f"Starting training: total_steps={total_steps}, epochs={self.num_epochs}, batch_size={self.batch_size}")
+        
+        # Create progress bar (only on main process)
+        pbar = None
+        if self.accelerator.is_main_process:
+            pbar = tqdm(
+                total=total_steps,
+                desc="Training",
+                unit="step",
+                bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+                ncols=100,
+            )
+        
+        start_time = time.time()
+        last_log_time = start_time
+        
         while self.global_step < self.max_steps and self.epoch < self.num_epochs:
             self.model.train()
             for batch in self.train_loader:
@@ -172,17 +229,62 @@ class CosmosWAMTrainer:
 
                 if self.accelerator.sync_gradients:
                     self.global_step += 1
+                    
+                    # Update progress bar
+                    if pbar is not None:
+                        pbar.update(1)
+                        
+                        # Calculate ETA
+                        elapsed = time.time() - start_time
+                        steps_per_sec = self.global_step / elapsed if elapsed > 0 else 0
+                        eta_seconds = (total_steps - self.global_step) / steps_per_sec if steps_per_sec > 0 else 0
+                        
+                        # Format ETA
+                        eta_str = self._format_time(eta_seconds)
+                        
+                        # Update progress bar postfix
+                        pbar.set_postfix({
+                            "loss": f"{loss_dict['loss_total']:.3f}",
+                            "video": f"{loss_dict['loss_video']:.3f}",
+                            "action": f"{loss_dict['loss_action']:.3f}",
+                            "lr": f"{self.scheduler.get_last_lr()[0]:.2e}",
+                            "ETA": eta_str,
+                        })
+                    
+                    # Log to file/console
                     if self.accelerator.is_main_process and self.global_step % self.log_every == 0:
                         lr = self.scheduler.get_last_lr()[0]
+                        current_time = time.time()
+                        elapsed_since_last = current_time - last_log_time
+                        last_log_time = current_time
+                        
+                        steps_per_sec = self.log_every / elapsed_since_last if elapsed_since_last > 0 else 0
+                        samples_per_sec = steps_per_sec * self.batch_size * self.accelerator.num_processes
+                        
                         logger.info(
-                            "step=%d epoch=%d loss=%.4f video=%.4f action=%.4f lr=%.6f",
+                            "step=%d/%d epoch=%d loss=%.4f video=%.4f action=%.4f lr=%.6f speed=%.2fsteps/s %.2fsamples/s",
                             self.global_step,
+                            total_steps,
                             self.epoch,
                             loss_dict["loss_total"],
                             loss_dict["loss_video"],
                             loss_dict["loss_action"],
                             lr,
+                            steps_per_sec,
+                            samples_per_sec,
                         )
+                        
+                        # Log to wandb
+                        if self.use_wandb:
+                            wandb.log({
+                                "train/loss_total": loss_dict["loss_total"],
+                                "train/loss_video": loss_dict["loss_video"],
+                                "train/loss_action": loss_dict["loss_action"],
+                                "train/learning_rate": lr,
+                                "train/steps_per_sec": steps_per_sec,
+                                "train/samples_per_sec": samples_per_sec,
+                                "train/epoch": self.epoch,
+                            }, step=self.global_step)
 
                     if self.global_step % self.save_every == 0:
                         self._save_checkpoint()
@@ -192,8 +294,29 @@ class CosmosWAMTrainer:
 
             self.epoch += 1
 
+        if pbar is not None:
+            pbar.close()
+            
         self._save_checkpoint(is_final=True)
-        logger.info("Training finished. Total steps: %d", self.global_step)
+        total_time = time.time() - start_time
+        logger.info("Training finished. Total steps: %d, Total time: %s", 
+                    self.global_step, self._format_time(total_time))
+        
+        # Close wandb
+        if self.use_wandb and self.accelerator.is_main_process:
+            wandb.finish()
+            logger.info("Wandb run finished")
+    
+    def _format_time(self, seconds: float) -> str:
+        """Format seconds to human readable string."""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        elif seconds < 3600:
+            return f"{seconds/60:.0f}m"
+        elif seconds < 86400:
+            return f"{seconds/3600:.1f}h"
+        else:
+            return f"{seconds/86400:.1f}d"
 
     def _save_checkpoint(self, is_final: bool = False):
         if not self.accelerator.is_main_process:
