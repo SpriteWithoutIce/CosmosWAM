@@ -103,12 +103,19 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
     def encode(self, state: torch.Tensor) -> torch.Tensor:
         # VAE is frozen and stays on its initialized device (typically cuda:0)
         # Move input to VAE's device
-        vae_device = next(self._impl.model.parameters()).device
+        try:
+            vae_device = next(self._impl.model.parameters()).device
+        except (AttributeError, StopIteration):
+            # Fallback: assume VAE is on cuda:0
+            vae_device = torch.device("cuda:0")
         state = state.to(device=vae_device, dtype=torch.float32)
         return self._impl.encode(state)
 
     def decode(self, latent: torch.Tensor) -> torch.Tensor:
         # VAE is frozen and stays on its initialized device
-        vae_device = next(self._impl.model.parameters()).device
+        try:
+            vae_device = next(self._impl.model.parameters()).device
+        except (AttributeError, StopIteration):
+            vae_device = torch.device("cuda:0")
         latent = latent.to(device=vae_device)
         return self._impl.decode(latent)
