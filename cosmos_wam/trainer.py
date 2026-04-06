@@ -113,14 +113,34 @@ class CosmosWAMTrainer:
             betas=(0.9, 0.95),
         )
 
-        total_steps = self._estimate_total_steps()
-        self.max_steps = total_steps if self.max_steps is None else self.max_steps
+        # Print dataset info
+        dataset_size = len(self.train_dataset)
+        logger.info("Dataset info: total_samples=%d, batch_size=%d, num_workers=%d", 
+                    dataset_size, self.batch_size, self.num_workers)
+        
+        # Calculate total steps
+        if self.max_steps is None:
+            # Train by epochs: calculate steps from epochs
+            steps_per_epoch = len(self.train_loader) // self.gradient_accumulation_steps
+            total_steps = steps_per_epoch * self.num_epochs
+            logger.info("Training by epochs: %d epochs * %d steps/epoch = %d total steps", 
+                        self.num_epochs, steps_per_epoch, total_steps)
+        else:
+            # Train by fixed steps
+            total_steps = self.max_steps
+            logger.info("Training by steps: %d total steps", total_steps)
+        
+        self.max_steps = total_steps
+        
         # Use explicit warmup_steps if provided, otherwise use 5% of total
         warmup_steps = cfg.get("warmup_steps", None)
         if warmup_steps is None:
             warmup_steps = int(total_steps * 0.05)
         else:
             warmup_steps = int(warmup_steps)
+        logger.info("Scheduler: lr_schedule=%s, warmup_steps=%d, total_steps=%d", 
+                    cfg.get("lr_schedule", "cosine"), warmup_steps, total_steps)
+        
         self.scheduler = self._build_scheduler(self.optimizer, total_steps, warmup_steps)
 
         self.global_step = 0
@@ -324,12 +344,17 @@ class CosmosWAMTrainer:
         tag = "final" if is_final else f"step_{self.global_step:07d}"
         path = os.path.join(self.output_dir, "checkpoints", f"{tag}.pt")
         unwrapped = self.accelerator.unwrap_model(self.model)
+        
+        # Save complete model state (DiT + VAE + Action Head) for easy loading
         state = {
             "model": unwrapped.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
-            "scheduler": self.scheduler.state_dict(),
             "step": self.global_step,
             "epoch": self.epoch,
         }
+        
         torch.save(state, path)
-        logger.info("Saved checkpoint to %s", path)
+        
+        # Log saved size
+        import os
+        size_mb = os.path.getsize(path) / (1024 * 1024)
+        logger.info("Saved checkpoint to %s (%.1f MB)", path, size_mb)

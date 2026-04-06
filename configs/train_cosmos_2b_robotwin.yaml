@@ -150,7 +150,7 @@ trainer:
   batch_size: 4              # 单相机可以增大batch_size
   num_workers: 4
   num_epochs: 100
-  max_steps: 100
+  max_steps: null  # null: train by epochs; set number: train by steps
   log_every: 10
   save_every: 5000
   eval_every: 5000
