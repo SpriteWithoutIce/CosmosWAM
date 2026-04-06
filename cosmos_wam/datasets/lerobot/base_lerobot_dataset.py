@@ -48,7 +48,8 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
         metas = []
         for ds_dir in dataset_dirs:
             ds_root = Path(ds_dir)
-            repo_id = ds_dir
+            # Use directory name as repo_id for local datasets
+            repo_id = ds_root.name
             meta = LeRobotDatasetMetadata(repo_id=repo_id, root=ds_root)
             metas.append(meta)
 
