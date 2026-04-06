@@ -39,6 +39,7 @@ def main():
     print(f"Output will be saved to: {output_path}")
     
     # Create processor
+    from cosmos_wam.datasets.lerobot.transforms.action_state_merger import ConcatLeftAlign
     processor = FastWAMProcessor(
         shape_meta=shape_meta,
         num_obs_steps=33,
@@ -46,8 +47,13 @@ def main():
         action_output_dim=16,
         proprio_output_dim=16,
         delta_action_dim_mask={"default": [True, True, True, True, True, True, True, False, True, True, True, True, True, True, True, False]},
+        action_state_transforms=None,
         use_stepwise_action_norm=False,
         norm_default_mode="min/max",
+        norm_exception_mode=None,
+        action_state_merger=ConcatLeftAlign(),
+        train_transforms=[],
+        val_transforms=[],
     )
     
     # Import here to avoid circular import
