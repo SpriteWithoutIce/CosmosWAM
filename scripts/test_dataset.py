@@ -77,11 +77,11 @@ try:
         save_dataset_stats_to_json(dummy_stats, stats_path)
     
     dataset = RobotVideoDataset(
-        dataset_dirs=["./data/lerobot_robotwin_eef_clean_50/close_the_box"],  # Replace with actual path
+        dataset_dirs=["/home/jwhe/linyihan/datasets/lerobot_robotwin_eef_clean_50/adjust_bottle-demo_clean_collect_200-50"],  # Replace with actual path
         shape_meta=shape_meta,
         num_frames=33,
         video_size=[240, 320],
-        text_embedding_cache_dir="./data/text_embeds_cache/robotwin_reason1",
+        text_embedding_cache_dir="/home/jwhe/linyihan/datasets/text_embeds_cache/robotwin_reason1",
         context_len=512,
         val_set_proportion=0.0,
         is_training_set=True,
