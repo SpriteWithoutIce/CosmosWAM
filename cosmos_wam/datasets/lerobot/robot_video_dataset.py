@@ -251,12 +251,25 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         cache_dir = self.text_embedding_cache_dir
         os.makedirs(cache_dir, exist_ok=True)
         hashed = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-        cache_path = os.path.join(cache_dir, f"{hashed}.t5_len{self.context_len}.pt")
+        cache_filename = f"{hashed}.t5_len{self.context_len}.pt"
+        
+        # Try flat structure first
+        cache_path = os.path.join(cache_dir, cache_filename)
+        
+        # If not found, search recursively in subdirectories
         if not os.path.exists(cache_path):
-            raise FileNotFoundError(
-                f"Missing text embedding cache: {cache_path}. "
-                "Run scripts/precompute_text_embeds.py first."
-            )
+            found_path = None
+            for root, dirs, files in os.walk(cache_dir):
+                if cache_filename in files:
+                    found_path = os.path.join(root, cache_filename)
+                    break
+            if found_path:
+                cache_path = found_path
+            else:
+                raise FileNotFoundError(
+                    f"Missing text embedding cache: {cache_filename} in {cache_dir} or its subdirectories. "
+                    "Run scripts/precompute_text_embeds.py first."
+                )
         payload = torch.load(cache_path, map_location="cpu")
         context = payload["context"]
         context_mask = payload["mask"].bool()
