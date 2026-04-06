@@ -14,8 +14,8 @@ from hydra.utils import instantiate
 from .base_lerobot_dataset import BaseLerobotDataset
 from .utils.normalizer import save_dataset_stats_to_json, load_dataset_stats_from_json
 from ..dataset_utils import ResizeSmallestSideAspectPreserving, CenterCrop, Normalize
-from fastwam.utils.logging_config import get_logger
-from fastwam.utils import misc, pytorch_utils
+from cosmos_wam.utils.logging_config import get_logger
+from cosmos_wam.utils import misc, pytorch_utils
 from accelerate import PartialState
 logger = get_logger(__name__)
 
@@ -239,7 +239,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         cache_dir = self.text_embedding_cache_dir
         os.makedirs(cache_dir, exist_ok=True)
         hashed = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-        cache_path = os.path.join(cache_dir, f"{hashed}.t5_len{self.context_len}.wan22ti2v5b.pt")
+        cache_path = os.path.join(cache_dir, f"{hashed}.t5_len{self.context_len}.pt")
         if not os.path.exists(cache_path):
             raise FileNotFoundError(
                 f"Missing text embedding cache: {cache_path}. "

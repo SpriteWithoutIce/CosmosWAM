@@ -5,7 +5,7 @@ import torch
 import numpy as np
 from copy import deepcopy
 from ..utils.normalizer import LinearNormalizer, NormMode
-from fastwam.utils.pytorch_utils import dict_apply
+from cosmos_wam.utils.pytorch_utils import dict_apply
 
 
 class BaseProcessor(ABC):

@@ -1,12 +1,21 @@
+"""Simple logging configuration."""
 import logging
 import sys
 
 
-def get_logger(name: str) -> logging.Logger:
+def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
+    """Get a logger with the specified name."""
     logger = logging.getLogger(name)
+    logger.setLevel(level)
+    
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+        handler.setLevel(level)
+        formatter = logging.Formatter(
+            '[%(asctime)s][%(name)s][%(levelname)s] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        handler.setFormatter(formatter)
         logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+    
     return logger

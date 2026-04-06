@@ -7,9 +7,9 @@ from omegaconf import DictConfig, OmegaConf
 import hashlib
 from pathlib import Path
 from git import Repo
-from fastwam.utils.logging_config import get_logger
+from cosmos_wam.utils.logging_config import get_logger
 
-from fastwam.utils.pytorch_utils import dict_apply
+from cosmos_wam.utils.pytorch_utils import dict_apply
 
 logger = get_logger(__name__)
 

@@ -5,8 +5,8 @@ import torch
 import numpy as np
 from copy import deepcopy
 from ..utils.normalizer import LinearNormalizer, NormMode
-from fastwam.utils.pytorch_utils import dict_apply
-from fastwam.utils.logging_config import get_logger
+from cosmos_wam.utils.pytorch_utils import dict_apply
+from cosmos_wam.utils.logging_config import get_logger
 from .base_processor import BaseProcessor
 
 logger = get_logger(__name__)

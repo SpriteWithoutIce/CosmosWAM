@@ -7,7 +7,7 @@ from .lerobot.lerobot_dataset import LeRobotDatasetMetadata, MultiLeRobotDataset
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import traceback
-from fastwam.utils.logging_config import get_logger
+from cosmos_wam.utils.logging_config import get_logger
 from .processors.base_processor import BaseProcessor
 
 logger = get_logger(__name__)
