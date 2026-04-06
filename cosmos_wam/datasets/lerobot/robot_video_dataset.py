@@ -87,18 +87,30 @@ class RobotVideoDataset(torch.utils.data.Dataset):
                 processor = instantiate(processor)
             if not pretrained_norm_stats:
                 if not is_training_set:
-                    raise ValueError("pretrained_norm_stats must be provided for validation/test sets since we don't want to calculate stats on them.")
-                if PartialState().is_main_process:
-                    logger.info("Calculating dataset stats for normalization...")
-                    dataset_stats = self.lerobot_dataset.get_dataset_stats(processor)
+                    # Try to load from default location (train set should have saved it)
                     work_dir = misc.get_work_dir()
-                    save_dataset_stats_to_json(dataset_stats, os.path.join(work_dir, "dataset_stats.json"))
+                    default_stats_path = os.path.join(work_dir, "dataset_stats.json")
+                    if os.path.exists(default_stats_path):
+                        logger.info(f"Loading dataset stats from default location: {default_stats_path}")
+                        dataset_stats = load_dataset_stats_from_json(default_stats_path)
+                    else:
+                        raise ValueError(
+                            f"pretrained_norm_stats must be provided for validation/test sets. "
+                            f"Could not find stats at default location: {default_stats_path}. "
+                            f"Please run training set first to generate stats, or provide pretrained_norm_stats path."
+                        )
                 else:
-                    dataset_stats = None
-                if torch.distributed.is_available() and torch.distributed.is_initialized():
-                    obj_list = [dataset_stats]
-                    torch.distributed.broadcast_object_list(obj_list, src=0)
-                    dataset_stats = obj_list[0]
+                    if PartialState().is_main_process:
+                        logger.info("Calculating dataset stats for normalization...")
+                        dataset_stats = self.lerobot_dataset.get_dataset_stats(processor)
+                        work_dir = misc.get_work_dir()
+                        save_dataset_stats_to_json(dataset_stats, os.path.join(work_dir, "dataset_stats.json"))
+                    else:
+                        dataset_stats = None
+                    if torch.distributed.is_available() and torch.distributed.is_initialized():
+                        obj_list = [dataset_stats]
+                        torch.distributed.broadcast_object_list(obj_list, src=0)
+                        dataset_stats = obj_list[0]
             else:
                 dataset_stats = load_dataset_stats_from_json(pretrained_norm_stats)
                 logger.info(f"Using dataset stats: {pretrained_norm_stats}")
