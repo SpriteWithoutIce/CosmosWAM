@@ -170,9 +170,16 @@ class CosmosWAM(nn.Module):
         latents = self.vae.encode(first_frame_pixels)  # [B, C, T_latent, H, W]
         first_frame_latent = latents[:, :, :1, :, :]   # [B, C, 1, H, W]
 
+        # Pad latents from 16 to 18 channels to match Cosmos checkpoint
+        if first_frame_latent.shape[1] == 16:
+            padding = torch.zeros(
+                first_frame_latent.shape[0], 2, 
+                *first_frame_latent.shape[2:], 
+                device=device, dtype=first_frame_latent.dtype
+            )
+            first_frame_latent = torch.cat([first_frame_latent, padding], dim=1)  # [B, 18, 1, H, W]
+
         # Build minimal latent with only conditional frame to trigger hooks
-        # Need at least 1 frame; if T_latent > 1 we can just use first_frame_latent
-        # But dit.prepare_embedded_sequence expects T divisible by patch_temporal
         dummy_latents = first_frame_latent
 
         # Run dit once to populate video features cache
