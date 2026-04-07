@@ -342,8 +342,6 @@ class CosmosWAMTrainer:
         if not self.accelerator.is_main_process:
             return
         
-        import os
-        
         tag = "final" if is_final else f"step_{self.global_step:07d}"
         path = os.path.join(self.output_dir, "checkpoints", f"{tag}.pt")
         unwrapped = self.accelerator.unwrap_model(self.model)
