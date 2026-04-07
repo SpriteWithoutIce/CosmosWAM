@@ -356,7 +356,6 @@ class CosmosWAMTrainer:
         torch.save(state, path)
         
         # Log saved size
-        import os
         size_mb = os.path.getsize(path) / (1024 * 1024)
         logger.info("Saved checkpoint to %s (%.1f MB) [epoch=%d, step=%d]", 
                     path, size_mb, self.epoch, self.global_step)
