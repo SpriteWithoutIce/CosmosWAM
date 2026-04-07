@@ -24,4 +24,4 @@ mixed_precision: bf16
 context_len: 512
 
 # Task settings
-instruction_type: unseen  # or "seen" for seen instructions
+instruction_type: seen  # or "seen" for seen instructions

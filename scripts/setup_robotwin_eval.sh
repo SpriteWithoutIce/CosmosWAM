@@ -9,7 +9,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 echo "Setting up Cosmos-WAM RoboTwin evaluation..."
 
 # Check if RoboTwin is installed
-ROBOTWIN_ROOT="${PROJECT_ROOT}/third_party/RoboTwin"
+ROBOTWIN_ROOT="/root/linyihan/RoboTwin"
 if [ ! -d "$ROBOTWIN_ROOT" ]; then
     echo "Error: RoboTwin not found at ${ROBOTWIN_ROOT}"
     echo "Please clone RoboTwin repository first:"
