@@ -31,6 +31,13 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+# Add cosmos-predict2.5 to path (from environment variable or config)
+COSMOS_PREDICT2_PATH = os.environ.get("COSMOS_PREDICT2_PATH", "/home/jwhe/linyihan/cosmos-predict2.5")
+if COSMOS_PREDICT2_PATH and Path(COSMOS_PREDICT2_PATH).exists():
+    if COSMOS_PREDICT2_PATH not in sys.path:
+        sys.path.insert(0, COSMOS_PREDICT2_PATH)
+        print(f"[CosmosWAM] Added cosmos_predict2 path: {COSMOS_PREDICT2_PATH}", file=sys.stderr)
+
 from cosmos_wam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from cosmos_wam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 from cosmos_wam.models.cosmos_wam import CosmosWAM

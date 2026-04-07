@@ -267,6 +267,17 @@ def main(cfg: DictConfig):
     env["CUDA_VISIBLE_DEVICES"] = str(cfg.gpu_id)
     env["PYTHONUNBUFFERED"] = "1"
     
+    # Pass cosmos_predict2 path to subprocess
+    cosmos_predict2_path = os.environ.get("COSMOS_PREDICT2_PATH", "/home/jwhe/linyihan/cosmos-predict2.5")
+    if cosmos_predict2_path:
+        env["COSMOS_PREDICT2_PATH"] = cosmos_predict2_path
+        # Also add to PYTHONPATH for subprocess
+        pythonpath = env.get("PYTHONPATH", "")
+        if pythonpath:
+            env["PYTHONPATH"] = f"{cosmos_predict2_path}:{pythonpath}"
+        else:
+            env["PYTHONPATH"] = cosmos_predict2_path
+    
     print(f"Running command: {' '.join(cmd)}")
     print(f"Working directory: {robotwin_root}")
     print(f"Log file: {log_file}")
