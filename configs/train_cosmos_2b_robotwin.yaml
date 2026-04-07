@@ -152,8 +152,8 @@ trainer:
   num_epochs: 20
   max_steps: null  # null: train by epochs; set number: train by steps
   log_every: 10
-  save_every: 5000
-  eval_every: 5000
+  save_every: 2000
+  eval_every: 2500
   gradient_accumulation_steps: 1   # 不需要grad accumulation
   max_grad_norm: 1.0
   seed: ${seed}
