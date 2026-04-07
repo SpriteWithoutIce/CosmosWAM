@@ -149,7 +149,7 @@ trainer:
   weight_decay: 0.0
   batch_size: 16              # 单相机可以增大batch_size
   num_workers: 4
-  num_epochs: 10
+  num_epochs: 20
   max_steps: null  # null: train by epochs; set number: train by steps
   log_every: 10
   save_every: 5000
@@ -166,7 +166,7 @@ trainer:
   
   # Weights & Biases logging
   wandb:
-    enabled: false           # 设置为 true 启用 wandb
+    enabled: true           # 设置为 true 启用 wandb
     project: "cosmos-wam-robotwin"  # wandb 项目名称
     name: null              # 实验名称，null 则自动生成
   
