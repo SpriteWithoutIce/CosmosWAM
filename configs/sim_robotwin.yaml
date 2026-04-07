@@ -14,7 +14,7 @@ mixed_precision: bf16
 
 # Model configuration (should match training)
 model:
-  vae_checkpoint: /home/jwhe/linyihan/CKPT/cosmos/tokenizer.pth
+  vae_checkpoint: /mnt/data/linyihan/ckpt/cosmos_base/tokenizer.pth
   vae_temporal_window: 16
   lambda_action: 1.0
   num_cond_frames: 1
