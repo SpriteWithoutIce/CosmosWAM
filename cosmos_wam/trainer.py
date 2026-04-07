@@ -342,6 +342,8 @@ class CosmosWAMTrainer:
         if not self.accelerator.is_main_process:
             return
         
+        import os
+        
         tag = "final" if is_final else f"step_{self.global_step:07d}"
         path = os.path.join(self.output_dir, "checkpoints", f"{tag}.pt")
         unwrapped = self.accelerator.unwrap_model(self.model)
@@ -356,7 +358,6 @@ class CosmosWAMTrainer:
         torch.save(state, path)
         
         # Log saved size
-        import os
         size_mb = os.path.getsize(path) / (1024 * 1024)
         logger.info("Saved checkpoint to %s (%.1f MB) [epoch=%d, step=%d]", 
                     path, size_mb, self.epoch, self.global_step)
