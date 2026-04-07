@@ -170,6 +170,7 @@ class CosmosWAMRobotWinPolicy:
         num_video_frames: int,
         context_len: int = 512,
         fixed_text_embedding_path: Optional[Path] = None,
+        task_name: Optional[str] = None,
     ) -> None:
         """Initialize the policy.
         
@@ -188,6 +189,7 @@ class CosmosWAMRobotWinPolicy:
             seed: Random seed (optional)
             num_video_frames: Number of video frames for context
             context_len: Text context length
+            task_name: Task name for text embedding lookup (e.g., "beat_block_hammer")
         """
         self.device = device
         self.model_dtype = model_dtype
@@ -200,6 +202,7 @@ class CosmosWAMRobotWinPolicy:
         self.context_len = context_len
         self.text_embedding_cache_dir = Path(text_embedding_cache_dir)
         self.fixed_text_embedding_path = Path(fixed_text_embedding_path) if fixed_text_embedding_path else None
+        self.task_name = task_name
         
         # Build model components
         self._build_model(model_cfg)
@@ -377,7 +380,11 @@ class CosmosWAMRobotWinPolicy:
         return image_tensor
     
     def _get_text_context(self, instruction: str) -> torch.Tensor:
-        """Get text context from cache."""
+        """Get text context from cache.
+        
+        Matches training format: "A video recorded from a robot's point of view executing the following instruction: {task}"
+        where {task} is the detailed instruction from tasks.jsonl (not task_name).
+        """
         # If fixed path is provided, use it directly (skip hash lookup)
         if self.fixed_text_embedding_path is not None:
             logger.info(f"Using fixed text embedding: {self.fixed_text_embedding_path}")
@@ -386,14 +393,24 @@ class CosmosWAMRobotWinPolicy:
             context = context.unsqueeze(0).to(device=self.device, dtype=self.model_dtype)
             return context
         
-        # Otherwise, look up by hash
-        task_desc = f"The task is {instruction}."
+        # Use the instruction directly (detailed description from tasks.jsonl)
+        # This matches how precompute_text_embeddings.py works
+        prompt = f"A video recorded from a robot's point of view executing the following instruction: {instruction}"
         
-        context, mask = _get_text_embedding_cache(
-            task_desc, 
-            self.text_embedding_cache_dir, 
-            self.context_len
-        )
+        logger.info(f"Looking for text embedding with prompt: {prompt[:80]}...")
+        
+        try:
+            context, mask = _get_text_embedding_cache(
+                prompt, 
+                self.text_embedding_cache_dir, 
+                self.context_len
+            )
+        except FileNotFoundError as e:
+            # Log available files for debugging
+            logger.error(f"Text embedding not found. Prompt hash: {hashlib.sha256(prompt.encode('utf-8')).hexdigest()[:16]}...")
+            cache_files = list(self.text_embedding_cache_dir.rglob("*.t5_len*.pt"))
+            logger.error(f"Available cache files ({len(cache_files)}): {[f.name[:20] + '...' for f in cache_files[:5]]}")
+            raise e
         
         # Move to device and add batch dimension
         context = context.unsqueeze(0).to(device=self.device, dtype=self.model_dtype)
@@ -555,6 +572,11 @@ def get_model(usr_args: Dict[str, Any]):
     # Get context length
     context_len = int(usr_args.get("context_len", cfg.data.train.get("context_len", 512)))
     
+    # Get task name for text embedding lookup
+    task_name = usr_args.get("task_name")
+    if _is_none_like(task_name):
+        task_name = cfg.EVALUATION.get("task_name")
+    
     # Create policy
     policy = CosmosWAMRobotWinPolicy(
         model_cfg=cfg.model,
@@ -572,6 +594,7 @@ def get_model(usr_args: Dict[str, Any]):
         num_video_frames=(int(cfg.data.train.num_frames) - 1) // int(cfg.data.train.action_video_freq_ratio) + 1,
         context_len=context_len,
         fixed_text_embedding_path=fixed_text_embedding_path,
+        task_name=task_name,
     )
     
     return policy
