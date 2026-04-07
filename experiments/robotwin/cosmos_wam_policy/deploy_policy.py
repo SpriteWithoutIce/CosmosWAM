@@ -161,6 +161,7 @@ class CosmosWAMRobotWinPolicy:
         seed: Optional[int],
         num_video_frames: int,
         context_len: int = 512,
+        fixed_text_embedding_path: Optional[Path] = None,
     ) -> None:
         """Initialize the policy.
         
@@ -190,6 +191,7 @@ class CosmosWAMRobotWinPolicy:
         self.num_video_frames = int(num_video_frames)
         self.context_len = context_len
         self.text_embedding_cache_dir = Path(text_embedding_cache_dir)
+        self.fixed_text_embedding_path = Path(fixed_text_embedding_path) if fixed_text_embedding_path else None
         
         # Build model components
         self._build_model(model_cfg)
@@ -361,7 +363,15 @@ class CosmosWAMRobotWinPolicy:
     
     def _get_text_context(self, instruction: str) -> torch.Tensor:
         """Get text context from cache."""
-        # Format instruction like in training
+        # If fixed path is provided, use it directly (skip hash lookup)
+        if self.fixed_text_embedding_path is not None:
+            logger.info(f"Using fixed text embedding: {self.fixed_text_embedding_path}")
+            payload = torch.load(self.fixed_text_embedding_path, map_location="cpu")
+            context = payload["context"]
+            context = context.unsqueeze(0).to(device=self.device, dtype=self.model_dtype)
+            return context
+        
+        # Otherwise, look up by hash
         task_desc = f"The task is {instruction}."
         
         context, mask = _get_text_embedding_cache(
