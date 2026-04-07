@@ -387,7 +387,7 @@ class CosmosWAMRobotWinPolicy:
             return context
         
         # Otherwise, look up by hash
-        task_desc = f"The task is {instruction}."
+        task_desc = f"{instruction}"
         
         context, mask = _get_text_embedding_cache(
             task_desc, 
