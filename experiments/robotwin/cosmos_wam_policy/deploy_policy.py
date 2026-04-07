@@ -473,8 +473,16 @@ def get_model(usr_args: Dict[str, Any]):
         raise ValueError("`ckpt_setting` is required and must be a valid checkpoint path.")
     checkpoint_path = Path(str(checkpoint_path)).expanduser().resolve()
     
-    # Get device
+    # Get device with specific GPU ID from CUDA_VISIBLE_DEVICES
     device = str(usr_args.get("device") or cfg.EVALUATION.get("device") or "cuda")
+    
+    # If device is just "cuda", get the specific GPU from CUDA_VISIBLE_DEVICES
+    if device == "cuda":
+        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+        # Take the first GPU in the list
+        first_gpu = cuda_visible.split(",")[0].strip()
+        device = f"cuda:{first_gpu}"
+    
     if device.startswith("cuda") and not torch.cuda.is_available():
         logger.warning("CUDA is unavailable; fallback device to cpu.")
         device = "cpu"
