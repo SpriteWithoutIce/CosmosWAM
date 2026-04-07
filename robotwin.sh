@@ -4,4 +4,6 @@ python experiments/robotwin/eval_robotwin_single.py \
     EVALUATION.dataset_stats_path=./dataset_stats.json \
     EVALUATION.robotwin_root=/root/linyihan/RoboTwin \
     EVALUATION.fixed_text_embedding_path=/mnt/data/linyihan/ckpt/0aa37248d1da4ad461c558c5652997440e6bced3eb30752248000c9cc081774e.t5_len512.pt \
+    EVALUATION.num_inference_steps=4 \
+    EVALUATION.replan_steps=8 \
     gpu_id=7

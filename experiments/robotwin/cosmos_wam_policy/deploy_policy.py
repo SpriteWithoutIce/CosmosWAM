@@ -441,7 +441,7 @@ class CosmosWAMRobotWinPolicy:
             return
         
         action = self.pending_actions.popleft()
-        task_env.take_action(action, action_type="qpos")
+        task_env.take_action(action, action_type="ee")
         self.step_count += 1
     
     def reset(self) -> None:
