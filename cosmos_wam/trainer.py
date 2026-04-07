@@ -346,9 +346,13 @@ class CosmosWAMTrainer:
         path = os.path.join(self.output_dir, "checkpoints", f"{tag}.pt")
         unwrapped = self.accelerator.unwrap_model(self.model)
         
-        # Save complete model state (DiT + VAE + Action Head) for easy loading
+        # Only save DiT and Action Head (VAE is frozen pre-trained, skip to save space)
+        # Filter out VAE parameters (keys starting with "vae.")
+        full_state = unwrapped.state_dict()
+        filtered_state = {k: v for k, v in full_state.items() if not k.startswith("vae.")}
+        
         state = {
-            "model": unwrapped.state_dict(),
+            "model": filtered_state,
             "step": self.global_step,
             "epoch": self.epoch,
         }
