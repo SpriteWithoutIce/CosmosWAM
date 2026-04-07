@@ -14,6 +14,6 @@ torchrun \
     --standalone \
     --nnodes=1 \
     --nproc_per_node="${NUM_GPUS}" \
-    scripts/train_robotwin.py \
+    scripts/train.py \
     --config-name train_cosmos_2b_libero \
     "$@"

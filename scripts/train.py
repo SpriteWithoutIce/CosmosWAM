@@ -3,7 +3,7 @@ from omegaconf import DictConfig
 from cosmos_wam.runtime import run_training
 
 
-@hydra.main(config_path="../configs", config_name="train_cosmos_2b", version_base="1.3")
+@hydra.main(config_path="../configs", config_name="train_cosmos_2b_robotwin", version_base="1.3")
 def main(cfg: DictConfig):
     run_training(cfg)
 
