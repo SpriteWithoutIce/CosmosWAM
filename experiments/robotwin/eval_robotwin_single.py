@@ -236,6 +236,12 @@ def main(cfg: DictConfig):
     _append_override(overrides, "device", cfg.EVALUATION.device)
     _append_override(overrides, "dataset_stats_path", str(dataset_stats_path))
     _append_override(overrides, "text_embedding_cache_dir", str(text_embedding_cache_dir))
+    
+    # Add fixed_text_embedding_path if provided
+    fixed_emb_path = _resolve_optional_path(cfg.EVALUATION.get("fixed_text_embedding_path"), base=PROJECT_ROOT)
+    if fixed_emb_path is not None:
+        _append_override(overrides, "fixed_text_embedding_path", str(fixed_emb_path))
+    
     _append_override(overrides, "action_horizon", cfg.EVALUATION.action_horizon)
     _append_override(overrides, "replan_steps", cfg.EVALUATION.replan_steps)
     _append_override(overrides, "num_inference_steps", cfg.EVALUATION.num_inference_steps)

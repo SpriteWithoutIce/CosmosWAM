@@ -132,8 +132,12 @@ EVALUATION:
   # Dataset statistics path (required)
   dataset_stats_path: null
   
-  # Text embedding cache directory (required)
+  # Text embedding cache directory (required for normal lookup)
   text_embedding_cache_dir: null
+  
+  # Fixed text embedding path (optional, for testing with specific file)
+  # If set, overrides text_embedding_cache_dir lookup
+  fixed_text_embedding_path: null
   
   # Device for evaluation
   device: cuda

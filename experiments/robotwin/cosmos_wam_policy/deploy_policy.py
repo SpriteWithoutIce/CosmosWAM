@@ -481,14 +481,26 @@ def get_model(usr_args: Dict[str, Any]):
         dataset_stats_path=usr_args.get("dataset_stats_path"),
     )
     
-    # Get text embedding cache dir
+    # Get text embedding cache dir (fallback if fixed path not set)
     text_embedding_cache_dir = usr_args.get("text_embedding_cache_dir")
     if _is_none_like(text_embedding_cache_dir):
         # Try to get from data.train config
         text_embedding_cache_dir = cfg.data.train.get("text_embedding_cache_dir")
-    if _is_none_like(text_embedding_cache_dir):
-        raise ValueError("`text_embedding_cache_dir` is required for text embeddings.")
-    text_embedding_cache_dir = Path(str(text_embedding_cache_dir)).expanduser().resolve()
+    if not _is_none_like(text_embedding_cache_dir):
+        text_embedding_cache_dir = Path(str(text_embedding_cache_dir)).expanduser().resolve()
+    
+    # Get fixed text embedding path (optional, for testing)
+    fixed_text_embedding_path = usr_args.get("fixed_text_embedding_path")
+    if _is_none_like(fixed_text_embedding_path):
+        fixed_text_embedding_path = cfg.EVALUATION.get("fixed_text_embedding_path")
+    if not _is_none_like(fixed_text_embedding_path):
+        fixed_text_embedding_path = Path(str(fixed_text_embedding_path)).expanduser().resolve()
+    
+    # Validate that at least one text embedding source is provided
+    if _is_none_like(text_embedding_cache_dir) and _is_none_like(fixed_text_embedding_path):
+        raise ValueError(
+            "Either `text_embedding_cache_dir` or `fixed_text_embedding_path` must be provided."
+        )
     
     # Get action horizon
     action_horizon = _parse_optional_int(usr_args.get("action_horizon"))
@@ -525,7 +537,7 @@ def get_model(usr_args: Dict[str, Any]):
         processor_cfg=cfg.data.train.processor,
         checkpoint_path=checkpoint_path,
         dataset_stats_path=dataset_stats_path,
-        text_embedding_cache_dir=text_embedding_cache_dir,
+        text_embedding_cache_dir=text_embedding_cache_dir if not _is_none_like(text_embedding_cache_dir) else Path("."),
         device=device,
         model_dtype=model_dtype,
         action_horizon=action_horizon,
@@ -535,6 +547,7 @@ def get_model(usr_args: Dict[str, Any]):
         seed=seed,
         num_video_frames=(int(cfg.data.train.num_frames) - 1) // int(cfg.data.train.action_video_freq_ratio) + 1,
         context_len=context_len,
+        fixed_text_embedding_path=fixed_text_embedding_path,
     )
     
     return policy
