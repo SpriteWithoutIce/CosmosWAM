@@ -40,6 +40,7 @@ if COSMOS_PREDICT2_PATH and Path(COSMOS_PREDICT2_PATH).exists():
 
 from cosmos_wam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from cosmos_wam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
+from cosmos_wam.datasets.dataset_utils import ResizeSmallestSideAspectPreserving, CenterCrop, Normalize
 from cosmos_wam.models.cosmos_wam import CosmosWAM
 from cosmos_wam.models.dit_wrapper import MiniTrainDIT, SACConfig
 from cosmos_wam.models.vae_wrapper import Wan2pt1VAEInterface
@@ -217,12 +218,16 @@ class CosmosWAMRobotWinPolicy:
         self.step_count = 0
         
         # Image transform: resize to 240x320 (training size)
-        self.image_transform = T.Compose([
-            T.ToPILImage(),
-            T.Resize((240, 320)),  # H, W
-            T.ToTensor(),  # [0, 1]
-            T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),  # [0,1] -> [-1,1]
-        ])
+        # Image transforms matching training (ResizeSmallestSideAspectPreserving + CenterCrop + Normalize)
+        self.resize_transform = ResizeSmallestSideAspectPreserving(
+            args={"img_w": 320, "img_h": 240}
+        )
+        self.crop_transform = CenterCrop(
+            args={"img_w": 320, "img_h": 240}
+        )
+        self.normalize_transform = Normalize(
+            args={"mean": 0.5, "std": 0.5}
+        )
         
         logger.info(
             "Initialized CosmosWAMRobotWinPolicy | ckpt=%s | horizon=%d | replan=%d | device=%s",
@@ -350,20 +355,23 @@ class CosmosWAMRobotWinPolicy:
         """Build image tensor from observation.
         
         Uses only head_camera (240x320) as trained.
+        Matches training preprocessing exactly.
         """
         obs_data = observation["observation"]
         head_image = obs_data["head_camera"]["rgb"]  # [H, W, 3] numpy array
         
-        # Convert to tensor and normalize to [-1, 1]
-        # Training used: ToTensor (0-1) then no explicit norm, but in build_inputs it expects raw
-        # Actually in training, video is fed directly to VAE which does its own scaling
-        # For inference, we need to match training preprocessing
+        # Convert to PIL then tensor [0, 255] -> [0, 1]
+        from PIL import Image
+        pil_image = Image.fromarray(head_image.astype(np.uint8), mode="RGB")
+        image_tensor = T.ToTensor()(pil_image)  # [3, H, W]
         
-        image_tensor = self.image_transform(head_image)  # [3, 240, 320]
+        # Apply same transforms as training: resize -> crop -> normalize
+        image_tensor = self.resize_transform(image_tensor)  # ResizeSmallestSideAspectPreserving
+        image_tensor = self.crop_transform(image_tensor)    # CenterCrop to 240x320
+        image_tensor = self.normalize_transform(image_tensor)  # Normalize to [-1, 1]
+        
+        # Move to device and add dimensions: [3, 240, 320] -> [1, 3, 1, 240, 320]
         image_tensor = image_tensor.to(device=self.device, dtype=self.model_dtype)
-        
-        # VAE expects 5D tensor [B, C, T, H, W]
-        # Add batch and time dimensions: [3, 240, 320] -> [1, 3, 1, 240, 320]
         image_tensor = image_tensor.unsqueeze(0).unsqueeze(2)  # [B=1, C=3, T=1, H=240, W=320]
         
         return image_tensor
