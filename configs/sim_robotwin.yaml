@@ -10,7 +10,7 @@ seed: 42
 ckpt: null
 
 # Mixed precision for evaluation
-mixed_precision: bf16
+mixed_precision: "no"
 
 # Model configuration (should match training)
 model:
