@@ -93,15 +93,17 @@ class ActionBlock(nn.Module):
         # t_emb: [B, D] -> modulation: [B, 9*D]
         mods = self.modulation(t_emb).chunk(9, dim=-1)
         shift_sa, scale_sa, gate_sa, shift_ca, scale_ca, gate_ca, shift_mlp, scale_mlp, gate_mlp = mods
-        shift_sa = shift_sa.unsqueeze(1)
-        scale_sa = scale_sa.unsqueeze(1)
-        gate_sa = gate_sa.unsqueeze(1)
-        shift_ca = shift_ca.unsqueeze(1)
-        scale_ca = scale_ca.unsqueeze(1)
-        gate_ca = gate_ca.unsqueeze(1)
-        shift_mlp = shift_mlp.unsqueeze(1)
-        scale_mlp = scale_mlp.unsqueeze(1)
-        gate_mlp = gate_mlp.unsqueeze(1)
+        # Ensure all AdaLN params match input dtype
+        target_dtype = x.dtype
+        shift_sa = shift_sa.unsqueeze(1).to(dtype=target_dtype)
+        scale_sa = scale_sa.unsqueeze(1).to(dtype=target_dtype)
+        gate_sa = gate_sa.unsqueeze(1).to(dtype=target_dtype)
+        shift_ca = shift_ca.unsqueeze(1).to(dtype=target_dtype)
+        scale_ca = scale_ca.unsqueeze(1).to(dtype=target_dtype)
+        gate_ca = gate_ca.unsqueeze(1).to(dtype=target_dtype)
+        shift_mlp = shift_mlp.unsqueeze(1).to(dtype=target_dtype)
+        scale_mlp = scale_mlp.unsqueeze(1).to(dtype=target_dtype)
+        gate_mlp = gate_mlp.unsqueeze(1).to(dtype=target_dtype)
 
         # Self-attention with AdaLN
         norm_x = self.norm1(x) * (1 + scale_sa) + shift_sa
@@ -301,7 +303,7 @@ class ActionDiT(nn.Module):
 
         for block, layer_video_tokens in zip(self.blocks, video_tokens):
             video_ctx = self._encode_video_context(layer_video_tokens, dtype=target_dtype)
-            x = block(x, temb.squeeze(1), video_ctx, self_mask=self_mask)
+            x = block(x, temb.squeeze(1).to(dtype=target_dtype), video_ctx, self_mask=self_mask)
 
         x = self.out_norm(x)
         return self.action_out(x)

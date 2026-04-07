@@ -220,7 +220,8 @@ class CosmosWAMRobotWinPolicy:
         self.image_transform = T.Compose([
             T.ToPILImage(),
             T.Resize((240, 320)),  # H, W
-            T.ToTensor(),
+            T.ToTensor(),  # [0, 1]
+            T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),  # [0,1] -> [-1,1]
         ])
         
         logger.info(
@@ -441,7 +442,7 @@ class CosmosWAMRobotWinPolicy:
             return
         
         action = self.pending_actions.popleft()
-        task_env.take_action(action, action_type="qpos")
+        task_env.take_action(action, action_type="ee")
         self.step_count += 1
     
     def reset(self) -> None:
