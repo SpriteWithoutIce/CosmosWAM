@@ -359,12 +359,11 @@ class CosmosWAMRobotWinPolicy:
         # For inference, we need to match training preprocessing
         
         image_tensor = self.image_transform(head_image)  # [3, 240, 320]
-        image_tensor = image_tensor.unsqueeze(0).to(device=self.device, dtype=self.model_dtype)
+        image_tensor = image_tensor.to(device=self.device, dtype=self.model_dtype)
         
-        # Scale to match training: VAE expects input in [0, 1] or specific range
-        # Wan2.1 VAE typically expects [-1, 1] or [0, 1] depending on implementation
-        # Our VAE wrapper encodes with: state.to(dtype=torch.float32)
-        # Assuming input should be [0, 1] (standard ToTensor output)
+        # VAE expects 5D tensor [B, C, T, H, W]
+        # Add batch and time dimensions: [3, 240, 320] -> [1, 3, 1, 240, 320]
+        image_tensor = image_tensor.unsqueeze(0).unsqueeze(2)  # [B=1, C=3, T=1, H=240, W=320]
         
         return image_tensor
     
@@ -473,15 +472,16 @@ def get_model(usr_args: Dict[str, Any]):
         raise ValueError("`ckpt_setting` is required and must be a valid checkpoint path.")
     checkpoint_path = Path(str(checkpoint_path)).expanduser().resolve()
     
-    # Get device with specific GPU ID from CUDA_VISIBLE_DEVICES
+    # Get device
     device = str(usr_args.get("device") or cfg.EVALUATION.get("device") or "cuda")
     
-    # If device is just "cuda", get the specific GPU from CUDA_VISIBLE_DEVICES
-    if device == "cuda":
-        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
-        # Take the first GPU in the list
-        first_gpu = cuda_visible.split(",")[0].strip()
-        device = f"cuda:{first_gpu}"
+    # If CUDA_VISIBLE_DEVICES is set, the subprocess can only see those GPUs
+    # So we should use cuda:0 (the first visible GPU), not the original ID
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible is not None and device.startswith("cuda"):
+        # Use cuda:0 since that's the only GPU visible in this subprocess
+        device = "cuda:0"
+        logger.info(f"CUDA_VISIBLE_DEVICES={cuda_visible}, using cuda:0")
     
     if device.startswith("cuda") and not torch.cuda.is_available():
         logger.warning("CUDA is unavailable; fallback device to cpu.")
