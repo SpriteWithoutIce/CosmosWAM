@@ -1,5 +1,5 @@
 """
-Extract DiT + Action Head from checkpoint, removing VAE to save space.
+Extract model from checkpoint and convert to bf16 to save space.
 
 Usage:
     python scripts/extract_model_only.py <input_ckpt_path> [output_ckpt_path]
@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 def extract_model_only(input_path: str, output_path: str = None):
-    """Load checkpoint, remove VAE weights, save smaller checkpoint."""
+    """Load checkpoint, convert to bf16, save smaller checkpoint."""
     input_path = Path(input_path)
     if not input_path.exists():
         print(f"Error: Input file not found: {input_path}")
@@ -35,27 +35,27 @@ def extract_model_only(input_path: str, output_path: str = None):
     else:
         state_dict = ckpt
     
-    # Count parameters before filtering
-    total_params_before = sum(v.numel() for v in state_dict.values())
-    
-    # Filter out VAE parameters
+    # Filter out VAE parameters and convert to bf16
     filtered_state = {}
     vae_keys = []
     for k, v in state_dict.items():
         if k.startswith("vae."):
             vae_keys.append(k)
         else:
-            filtered_state[k] = v
+            # Convert fp32 to bf16 to save space
+            if v.dtype == torch.float32:
+                filtered_state[k] = v.to(torch.bfloat16)
+            else:
+                filtered_state[k] = v
     
-    # Count parameters after filtering
-    total_params_after = sum(v.numel() for v in filtered_state.values())
+    # Count parameters
+    total_params = sum(v.numel() for v in filtered_state.values())
     
     print(f"Total keys: {len(state_dict)}")
     print(f"VAE keys removed: {len(vae_keys)}")
     print(f"Remaining keys: {len(filtered_state)}")
-    print(f"Parameters before: {total_params_before:,}")
-    print(f"Parameters after: {total_params_after:,}")
-    print(f"VAE parameters removed: {total_params_before - total_params_after:,}")
+    print(f"Parameters: {total_params:,}")
+    print(f"Dtype: bf16 (2 bytes per param)")
     
     # Build new checkpoint
     new_ckpt = {
@@ -66,12 +66,12 @@ def extract_model_only(input_path: str, output_path: str = None):
     
     # Determine output path
     if output_path is None:
-        output_path = input_path.parent / f"{input_path.stem}_small{input_path.suffix}"
+        output_path = input_path.parent / f"{input_path.stem}_bf16{input_path.suffix}"
     else:
         output_path = Path(output_path)
     
     # Save
-    print(f"\nSaving to {output_path}...")
+    print(f"\nSaving bf16 checkpoint to {output_path}...")
     torch.save(new_ckpt, output_path)
     
     # Get new size

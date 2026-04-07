@@ -351,8 +351,12 @@ class CosmosWAMTrainer:
         full_state = unwrapped.state_dict()
         filtered_state = {k: v for k, v in full_state.items() if not k.startswith("vae.")}
         
+        # Convert to bf16 to save space (matching original Cosmos checkpoint format)
+        filtered_state_bf16 = {k: v.to(torch.bfloat16) if v.dtype == torch.float32 else v 
+                               for k, v in filtered_state.items()}
+        
         state = {
-            "model": filtered_state,
+            "model": filtered_state_bf16,
             "step": self.global_step,
             "epoch": self.epoch,
         }
