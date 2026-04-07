@@ -1,0 +1,27 @@
+# Cosmos-WAM Policy Configuration for RoboTwin
+
+# Policy name (must match directory name)
+policy_name: cosmos_wam_policy
+
+# Model configuration - will be overridden by sim_robotwin.yaml
+model:
+  # These should match your training config
+  _target_: cosmos_wam.models.cosmos_wam.CosmosWAM
+  
+# Evaluation settings
+eval_num_episodes: 50
+
+# Action prediction settings
+action_horizon: 8        # Number of actions to predict
+replan_steps: 4          # Execute this many actions before replanning
+num_inference_steps: 20  # Diffusion sampling steps
+
+# Device settings
+device: cuda
+mixed_precision: bf16
+
+# Text embedding settings
+context_len: 512
+
+# Task settings
+instruction_type: unseen  # or "seen" for seen instructions
