@@ -39,6 +39,8 @@ def set_global_seed(seed: int, get_worker_init_fn: bool = False):
 
 class CosmosWAMTrainer:
     def __init__(self, model, train_dataset, val_dataset=None, *, cfg: DictConfig):
+        self.data_cfg = cfg.data
+        cfg = cfg.trainer
         self.model = model
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
@@ -197,13 +199,8 @@ class CosmosWAMTrainer:
         """Generate a descriptive wandb run name based on config."""
         from datetime import datetime
         
-        # Extract config name from output_dir (e.g., "train_cosmos_2b_libero" from "./outputs/train_cosmos_2b_libero")
-        output_dir = str(cfg.get("output_dir", "unknown"))
-        config_name = output_dir.split("/")[-1].split("_")[-2:]  # Get last parts
-        config_name = "_".join(config_name) if len(config_name) > 1 else output_dir.split("/")[-1]
-        
         # Extract dataset info from data config
-        data_cfg = cfg.get("data", {}).get("train", {})
+        data_cfg = self.data_cfg.get("train", {})
         dataset_dirs = data_cfg.get("dataset_dirs", [])
         if dataset_dirs:
             # Extract dataset name from path (e.g., "libero_spatial" from ".../libero_spatial_no_noops_lerobot")
@@ -215,18 +212,19 @@ class CosmosWAMTrainer:
         else:
             dataset_info = "unknown"
         
-        # Get num_frames from data config
-        num_frames = data_cfg.get("num_frames", "?")
-        
+        # Get num_cameras from data config
+        processor = data_cfg.get("processor", {})
+        num_cameras = processor.num_output_cameras
+
         # Get batch size
         batch_size = cfg.get("batch_size", cfg.get("trainer", {}).get("batch_size", "?"))
         
         # Timestamp
         timestamp = datetime.now().strftime("%m%d_%H%M")
         
-        # Format: {config}_{dataset}_f{frames}_b{batch}_{timestamp}
-        # e.g., "2b_libero_f33_b16_0403_1430"
-        run_name = f"{config_name}_{dataset_info}_f{num_frames}_b{batch_size}_{timestamp}"
+        # Format: {dataset}_f{frames}_b{batch}_{timestamp}
+        # e.g., "libero_f2_b16_0403_1430"
+        run_name = f"{dataset_info}_f{num_cameras}_b{batch_size}_{timestamp}"
         return run_name
     
     def _estimate_total_steps(self):

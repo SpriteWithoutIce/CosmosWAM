@@ -90,5 +90,5 @@ def run_training(cfg: DictConfig):
     val_dataset = instantiate(cfg.data.get("val", None)) if "val" in cfg.data else None
 
     # 6. Train
-    trainer = CosmosWAMTrainer(model=model, train_dataset=train_dataset, val_dataset=val_dataset, cfg=cfg.trainer)
+    trainer = CosmosWAMTrainer(model=model, train_dataset=train_dataset, val_dataset=val_dataset, cfg=cfg)
     trainer.train()
