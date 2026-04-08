@@ -33,10 +33,8 @@ class CosmosWAM(nn.Module):
     def _make_hook(self, layer_idx: int):
         def hook(module, input, output):
             # output: [B, T, H, W, D]
-            print(f"[HOOK] Layer {layer_idx} triggered: output shape={tuple(output.shape)}, mean={output.mean().item():.4f}, std={output.std().item():.4f}", flush=True)
             cond = output[:, : self.num_cond_frames, :, :, :]  # [B, K, H, W, D]
-            B, K, H, W, D = cond.shape
-            self._video_features[layer_idx] = cond.view(B, K * H * W, D)
+            self._video_features[layer_idx] = cond
         return hook
 
     def build_inputs(self, sample: Dict[str, Any]) -> Dict[str, Any]:
@@ -123,9 +121,6 @@ class CosmosWAM(nn.Module):
         for action_layer_idx in range(self.action_head.num_layers):
             cosmos_layer_idx = 14 + action_layer_idx
             layer_hidden = hidden_list[cosmos_layer_idx]  # [B, T*H*W, D]
-            # DEBUG: Print stats for first batch item
-            if action_layer_idx < 3:
-                print(f"[TRAIN] Video layer {action_layer_idx}: shape={tuple(layer_hidden.shape)}, mean={layer_hidden.mean().item():.4f}, std={layer_hidden.std().item():.4f}", flush=True)
             # Reshape back to [B, T, H, W, D] using latent shape
             T_lat, H_lat, W_lat = latents.shape[2], latents.shape[3], latents.shape[4]
             # Note: after patchify, internal T/H/W may differ from latent T/H/W
@@ -194,23 +189,15 @@ class CosmosWAM(nn.Module):
         )
         video_cond_cache = [self._video_features[14 + i].detach().clone() for i in range(self.action_head.num_layers)]
         
-        # DEBUG: Check video_cond_cache
-        print(f"[COSMOS_WAM] Video cond cache: {len(video_cond_cache)} layers", flush=True)
-        for i, v in enumerate(video_cond_cache[:3]):
-            print(f"[COSMOS_WAM] Video layer {i}: shape={tuple(v.shape)}, mean={v.mean().item():.4f}, std={v.std().item():.4f}", flush=True)
-        
         # Action flow matching denoising
         action = torch.randn(B, action_horizon, self.action_head.action_dim, device=device)
-        print(f"[COSMOS_WAM] Initial action noise: mean={action.mean().item():.4f}, std={action.std().item():.4f}", flush=True)
         for i in range(num_inference_steps):
             t = torch.full((B,), 1.0 - i / num_inference_steps, device=device, dtype=torch.float32)
             pred = self.action_head(action, video_cond_cache, t)
             dt = -1.0 / num_inference_steps
             action = action + dt * pred
-            if i % 5 == 0 or i == num_inference_steps - 1:
-                print(f"[COSMOS_WAM] Step {i}: t={t.item():.3f}, pred_mean={pred.mean().item():.4f}, "
-                      f"action_mean={action.mean().item():.4f}, action_std={action.std().item():.4f}", flush=True)
-
+        
+        # DEBUG: Final action stats
         print(f"[COSMOS_WAM] Final action: mean={action.mean().item():.4f}, std={action.std().item():.4f}, "
               f"min={action.min().item():.4f}, max={action.max().item():.4f}", flush=True)
         return action
