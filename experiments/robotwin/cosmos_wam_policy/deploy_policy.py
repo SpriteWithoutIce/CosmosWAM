@@ -337,11 +337,9 @@ class CosmosWAMRobotWinPolicy:
         
         # Check action_head weights specifically
         action_head_keys = [k for k in state_dict.keys() if 'action_head' in k and 'weight' in k]
-        print(f"[DEBUG] Found {len(action_head_keys)} action_head weight keys", flush=True)
         if action_head_keys:
             for k in action_head_keys[:3]:
                 v = state_dict[k]
-                print(f"[DEBUG] ActionHead weight '{k}': shape={tuple(v.shape)}, mean={v.float().mean().item():.6f}, std={v.float().std().item():.6f}", flush=True)
         
         # Load state dict (filtering out VAE if present, since we have our own)
         filtered_state = {k: v for k, v in state_dict.items() if not k.startswith("vae.")}
@@ -385,19 +383,7 @@ class CosmosWAMRobotWinPolicy:
         
         action_key = action_meta[0]["key"]
         normalizer = self.processor.normalizer.normalizers["action"][action_key]
-        
-        # DEBUG: Print raw model output stats
-        print(f"[DEBUG] Raw action (before denorm): shape={action.shape}, "
-              f"mean={action.mean().item():.4f}, std={action.std().item():.4f}, "
-              f"min={action.min().item():.4f}, max={action.max().item():.4f}", flush=True)
-        
         denorm = normalizer.backward(action.to(dtype=torch.float32, device="cpu"))
-        
-        # DEBUG: Print denormalized action stats
-        print(f"[DEBUG] Denorm action: shape={denorm.shape}, "
-              f"mean={denorm.mean().item():.4f}, std={denorm.std().item():.4f}, "
-              f"min={denorm.min().item():.4f}, max={denorm.max().item():.4f}", flush=True)
-        print(f"[DEBUG] First action: {denorm[0, 0].numpy()}", flush=True)
         
         return denorm.numpy()
     
@@ -489,18 +475,8 @@ class CosmosWAMRobotWinPolicy:
                 action_horizon=self.action_horizon,
                 context=context,
                 num_inference_steps=self.num_inference_steps,
-            )
-        
-        # DEBUG: Print raw model output
-        print(f"[DEBUG] Model output action stats: mean={action.mean().item():.4f}, "
-              f"std={action.std().item():.4f}, min={action.min().item():.4f}, max={action.max().item():.4f}", flush=True)
-        
-        # Denormalize
-        action_chunk = self._denormalize_action(action)[0]  # [T, D]
-        
-        # DEBUG: Print final action
-        print(f"[DEBUG] Final action_chunk[0]: {action_chunk[0]}", flush=True)
-        
+            )    
+        action_chunk = self._denormalize_action(action)[0]  # [T, D]      
         return action_chunk
     
     def _fill_action_queue(self, observation: Dict[str, Any], instruction: str) -> None:

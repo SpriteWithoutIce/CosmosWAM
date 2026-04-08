@@ -12,7 +12,7 @@ model:
 eval_num_episodes: 50
 
 # Action prediction settings
-action_horizon: 32        # Number of actions to predict
+action_horizon: 8        # Number of actions to predict
 replan_steps: 4          # Execute this many actions before replanning
 num_inference_steps: 20  # Diffusion sampling steps
 

@@ -198,13 +198,6 @@ class CosmosWAM(nn.Module):
             # Flow from noise to action: dx/dt = pred
             dt = 1.0 / num_inference_steps
             action = action + dt * pred
-            # DEBUG: Print every few steps
-            if i % 4 == 0 or i == num_inference_steps - 1:
-                print(f"[COSMOS_WAM] Step {i:2d}: t={t.item():.3f}, pred_std={pred.std().item():.4f}, action_std={action.std().item():.4f}", flush=True)
-        
-        # DEBUG: Final action stats
-        print(f"[COSMOS_WAM] Final action: mean={action.mean().item():.4f}, std={action.std().item():.4f}, "
-              f"min={action.min().item():.4f}, max={action.max().item():.4f}", flush=True)
         return action
 
     @torch.no_grad()
