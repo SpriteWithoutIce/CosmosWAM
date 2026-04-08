@@ -210,6 +210,24 @@ class CosmosWAMRobotWinPolicy:
         # Load checkpoint
         self._load_checkpoint(checkpoint_path)
         
+        # Verify model weights are loaded (not random)
+        # Check action head first layer weight
+        action_head_first_weight = None
+        for name, param in self.model.action_head.named_parameters():
+            if 'weight' in name and action_head_first_weight is None:
+                action_head_first_weight = param.data
+                break
+        
+        if action_head_first_weight is not None:
+            w_mean = action_head_first_weight.float().mean().item()
+            w_std = action_head_first_weight.float().std().item()
+            logger.info(f"Action head weight check: mean={w_mean:.6f}, std={w_std:.6f}")
+            if abs(w_mean) < 0.01 and w_std < 0.01:
+                logger.error("WARNING: Action head weights appear to be uninitialized (random)!")
+                logger.error("Checkpoint may not have been loaded correctly!")
+            else:
+                logger.info("Action head weights appear to be loaded correctly.")
+        
         # Setup processor for normalization
         self.processor: FastWAMProcessor = instantiate(processor_cfg).eval()
         dataset_stats = load_dataset_stats_from_json(str(dataset_stats_path))
