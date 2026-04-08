@@ -643,8 +643,9 @@ def visualize_single_episode(
             break
         
         # 获取帧数据 [C, H, W] -> [H, W, C]
-        frame_tensor = frame["data"]  # [3, H, W], float32 [0, 1]
-        frame_rgb = (frame_tensor.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+        # VideoReader 返回的是 uint8 [0, 255]，不是 float32 [0, 1]
+        frame_tensor = frame["data"]  # [3, H, W], uint8 [0, 255]
+        frame_rgb = frame_tensor.permute(1, 2, 0).numpy()  # [H, W, 3], uint8
         
         # OpenCV需要BGR格式
         frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
