@@ -507,10 +507,12 @@ def visualize_single_episode(
         output_path: 输出视频路径 (e.g., output.mp4)
         heatmap_height/width: heatmap分辨率
         sigma: Gaussian标准差
-        alpha: heatmap叠加透明度
+        alpha: heatmap叠加透明度 (0-1)
     """
     import cv2
+    import torchvision
     from tqdm import tqdm
+    from pathlib import Path
     
     # 加载相机参数
     with open(camera_params_path, "r") as f:
@@ -534,18 +536,18 @@ def visualize_single_episode(
         sigma,
     )
     
-    # 打开视频
+    # 使用torchvision读取视频 (和数据集相同的方法)
     print(f"Opening video: {video_path}")
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise ValueError(f"Cannot open video: {video_path}")
+    torchvision.set_video_backend("pyav")
+    reader = torchvision.io.VideoReader(video_path, "video")
     
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # 获取视频信息
+    fps = reader.get_metadata()["video"]["fps"][0]
+    video_info = reader.get_metadata()["video"]
+    video_width = video_info["width"][0] if "width" in video_info else 512
+    video_height = video_info["height"][0] if "height" in video_info else 512
     
-    print(f"Video: {video_width}x{video_height} @ {fps}fps, {total_frames} frames")
+    print(f"Video: {video_width}x{video_height} @ {fps}fps")
     print(f"Projections: {len(projections)} frames")
     
     # 准备输出视频 (并排显示: 原视频 | heatmap)
@@ -559,15 +561,19 @@ def visualize_single_episode(
     colormap = cv2.COLORMAP_JET
     
     frame_idx = 0
-    pbar = tqdm(total=min(total_frames, len(projections)), desc="Generating video")
+    pbar = tqdm(total=len(projections), desc="Generating video")
     
-    while True:
-        ret, frame = cap.read()
-        if not ret or frame_idx >= len(projections):
+    # 读取所有帧
+    for frame in reader:
+        if frame_idx >= len(projections):
             break
         
-        # BGR -> RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # 获取帧数据 [C, H, W] -> [H, W, C]
+        frame_tensor = frame["data"]  # [3, H, W], float32 [0, 1]
+        frame_rgb = (frame_tensor.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+        
+        # OpenCV需要BGR格式
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
         
         # 生成heatmap
         proj = projections[frame_idx]
@@ -585,44 +591,46 @@ def visualize_single_episode(
             
             # 转换为colormap (0-255)
             heatmap_colored = cv2.applyColorMap((heatmap_resized * 255).astype(np.uint8), colormap)
-            heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
             
-            # 叠加到原视频
+            # 叠加到原视频 (heatmap_colored是BGR格式)
             frame_with_heatmap = (frame_rgb * (1 - alpha) + heatmap_colored * alpha).astype(np.uint8)
             
-            # 添加文字信息
+            # 添加文字信息 (OpenCV在RGB图像上绘制)
             info_text = f"EEF: ({proj['eef_pos_3d'][0]:.3f}, {proj['eef_pos_3d'][1]:.3f}, {proj['eef_pos_3d'][2]:.3f})"
             cv2.putText(frame_with_heatmap, info_text, (10, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             pixel_text = f"Pixel: ({proj['pixel_u']:.1f}, {proj['pixel_v']:.1f})"
             cv2.putText(frame_with_heatmap, pixel_text, (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
+            # 转回BGR用于输出
+            frame_with_heatmap_bgr = cv2.cvtColor(frame_with_heatmap, cv2.COLOR_RGB2BGR)
         else:
             # EEF不在视野内
-            frame_with_heatmap = frame_rgb.copy()
-            cv2.putText(frame_with_heatmap, "EEF NOT VISIBLE", (10, 30),
+            cv2.putText(frame_bgr, "EEF NOT VISIBLE", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
-        
-        # 转换为BGR用于输出
-        frame_with_heatmap_bgr = cv2.cvtColor(frame_with_heatmap, cv2.COLOR_RGB2BGR)
+            frame_with_heatmap_bgr = frame_bgr.copy()
         
         # 并排拼接
-        combined = np.concatenate([frame, frame_with_heatmap_bgr], axis=1)
+        combined = np.concatenate([frame_bgr, frame_with_heatmap_bgr], axis=1)
         out.write(combined)
         
         frame_idx += 1
         pbar.update(1)
     
     pbar.close()
-    cap.release()
+    reader.container.close()  # 关闭视频reader
     out.release()
     
     print(f"\nSaved visualization to: {output_path}")
     print(f"Total frames processed: {frame_idx}")
     
     # 打印统计
-    visible_count = sum(1 for p in projections[:frame_idx] if p["is_visible"])
-    print(f"Visible frames: {visible_count}/{frame_idx} ({100*visible_count/frame_idx:.1f}%)")
+    if frame_idx > 0:
+        visible_count = sum(1 for p in projections[:frame_idx] if p["is_visible"])
+        print(f"Visible frames: {visible_count}/{frame_idx} ({100*visible_count/frame_idx:.1f}%)")
+    else:
+        print("Warning: No frames were processed")
 
 
 # ============================================================================
