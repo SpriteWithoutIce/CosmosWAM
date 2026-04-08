@@ -25,3 +25,22 @@ context_len: 512
 
 # Task settings
 instruction_type: seen  # or "seen" for seen instructions
+
+# Online Text Encoder Settings (optional, for 24GB GPU setups)
+# If you have limited VRAM (e.g., RTX 4090 24GB), you can use online text encoding
+# to run Reason1-7B on a separate GPU from the main inference model.
+#
+# Example usage:
+#   use_online_text_encoder: true
+#   online_text_encoder_path: /path/to/Cosmos-Reason1-7B
+#   text_encoder_device: cuda:0  # GPU for text encoder
+#   device: cuda:1               # GPU for main model (in sim_robotwin.yaml)
+#
+# Or via command line:
+#   --use_online_text_encoder true \
+#   --online_text_encoder_path /path/to/Cosmos-Reason1-7B \
+#   --text_encoder_device cuda:0
+
+# use_online_text_encoder: false
+# online_text_embedding_path: null  # Path to Cosmos-Reason1-7B model
+# text_encoder_device: null         # Device for text encoder (e.g., "cuda:0")

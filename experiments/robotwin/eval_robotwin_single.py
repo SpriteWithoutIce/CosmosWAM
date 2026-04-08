@@ -253,6 +253,12 @@ def main(cfg: DictConfig):
         cfg.EVALUATION.skip_get_obs_within_replan,
     )
     
+    # Add online text encoder settings if enabled
+    if cfg.EVALUATION.get("use_online_text_encoder", False):
+        _append_override(overrides, "use_online_text_encoder", True)
+        _append_override(overrides, "online_text_encoder_path", cfg.EVALUATION.get("online_text_encoder_path"))
+        _append_override(overrides, "text_encoder_device", cfg.EVALUATION.get("text_encoder_device"))
+    
     cmd = [
         sys.executable,
         "-u",

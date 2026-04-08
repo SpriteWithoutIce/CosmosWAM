@@ -142,12 +142,115 @@ def _get_text_embedding_cache(prompt: str, cache_dir: Path, context_len: int = 5
             if f"{hashed}.t5_len{context_len}.pt" in files:
                 cache_path = Path(root) / f"{hashed}.t5_len{context_len}.pt"
                 break
-    print(prompt, hashed)
     if not cache_path.exists():
         raise FileNotFoundError(f"Missing text embedding cache for prompt: {prompt[:50]}...")
     
     payload = torch.load(cache_path, map_location="cpu")
     return payload["context"], payload["mask"].bool()
+
+
+class OnlineTextEncoder:
+    """Online text encoder using Cosmos-Reason1-7B (Qwen2.5-VL-7B).
+    
+    This encoder computes text embeddings on-the-fly without precomputed cache.
+    It can run on a different GPU than the main inference model.
+    """
+    
+    NUM_EMBEDDING_PADDING_TOKENS = 512
+    FULL_CONCAT_DIM = 28 * 3584  # 100352
+    CONTEXT_LEN = 512
+    
+    def __init__(self, model_path: str, device: str = "cuda:0"):
+        """Initialize the online text encoder.
+        
+        Args:
+            model_path: Path to Cosmos-Reason1-7B model
+            device: Device to run the encoder on (e.g., "cuda:0" or "cuda:1")
+        """
+        self.device = device
+        logger.info(f"Loading online text encoder from: {model_path}")
+        logger.info(f"Text encoder device: {device}")
+        
+        try:
+            from transformers import AutoTokenizer, Qwen2_5_VLForConditionalGeneration
+        except ImportError:
+            raise ImportError("Please install transformers: pip install transformers")
+        
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model_path,
+            torch_dtype=torch.bfloat16,
+            device_map=device,
+            trust_remote_code=True,
+        )
+        self.model.eval()
+        self.pad_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+        logger.info("Online text encoder loaded successfully")
+    
+    @torch.no_grad()
+    def encode(self, task_text: str) -> torch.Tensor:
+        """Encode a single task text to embedding.
+        
+        Args:
+            task_text: The task instruction text
+            
+        Returns:
+            context: [CONTEXT_LEN, FULL_CONCAT_DIM] tensor (bfloat16)
+        """
+        # Build chat template (same as precompute_text_embeddings.py)
+        conversations = [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "You are a helpful assistant who will provide prompts to an image generator.",
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": task_text}],
+            },
+        ]
+        
+        input_ids = self.tokenizer.apply_chat_template(
+            conversations,
+            tokenize=True,
+            add_generation_prompt=False,
+            return_tensors=None,
+        )
+        
+        # Pad or truncate to CONTEXT_LEN
+        if len(input_ids) < self.NUM_EMBEDDING_PADDING_TOKENS:
+            input_ids = input_ids + [self.pad_id] * (self.NUM_EMBEDDING_PADDING_TOKENS - len(input_ids))
+        else:
+            input_ids = input_ids[:self.NUM_EMBEDDING_PADDING_TOKENS]
+        
+        input_ids_tensor = torch.LongTensor(input_ids).unsqueeze(0).to(self.device)
+        
+        # Get hidden states
+        outputs = self.model(
+            input_ids=input_ids_tensor,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        hidden_states = outputs.hidden_states  # tuple of (num_layers+1) tensors
+        
+        # 28 层 mean-normalize 后在最后一维 concat -> (1, 512, 28*3584 = 100352)
+        normalized = []
+        for layer_idx in range(1, len(hidden_states)):
+            h = hidden_states[layer_idx].float()
+            h = (h - h.mean(dim=-1, keepdim=True)) / (h.std(dim=-1, keepdim=True) + 1e-8)
+            normalized.append(h)
+        
+        text_emb = torch.cat(normalized, dim=-1)  # (1, 512, 100352)
+        text_emb = text_emb.squeeze(0).to(torch.bfloat16)  # (512, 100352)
+        
+        assert text_emb.shape[-1] == self.FULL_CONCAT_DIM, \
+            f"Unexpected Reason1 dim {text_emb.shape[-1]}, expected {self.FULL_CONCAT_DIM}"
+        
+        return text_emb
 
 
 class CosmosWAMRobotWinPolicy:
@@ -171,10 +274,16 @@ class CosmosWAMRobotWinPolicy:
         context_len: int = 512,
         fixed_text_embedding_path: Optional[Path] = None,
         task_name: Optional[str] = None,
+        use_online_text_encoder: bool = False,
+        online_text_encoder_path: Optional[str] = None,
+        text_encoder_device: Optional[str] = None,
     ) -> None:
         """Initialize the policy.
         
         Args:
+            use_online_text_encoder: Whether to compute text embeddings online
+            online_text_encoder_path: Path to Cosmos-Reason1-7B model (required if use_online_text_encoder=True)
+            text_encoder_device: Device for text encoder (e.g., "cuda:0"). If None, uses same device as model.
             model_cfg: Model configuration (from yaml)
             processor_cfg: Processor configuration for data preprocessing
             checkpoint_path: Path to model checkpoint
@@ -203,6 +312,15 @@ class CosmosWAMRobotWinPolicy:
         self.text_embedding_cache_dir = Path(text_embedding_cache_dir)
         self.fixed_text_embedding_path = Path(fixed_text_embedding_path) if fixed_text_embedding_path else None
         self.task_name = task_name
+        self.use_online_text_encoder = use_online_text_encoder
+        
+        # Initialize online text encoder if needed
+        self.text_encoder = None
+        if use_online_text_encoder:
+            if online_text_encoder_path is None:
+                raise ValueError("online_text_encoder_path is required when use_online_text_encoder=True")
+            text_enc_device = text_encoder_device if text_encoder_device is not None else device
+            self.text_encoder = OnlineTextEncoder(online_text_encoder_path, device=text_enc_device)
         
         # Build model components
         self._build_model(model_cfg)
@@ -421,11 +539,18 @@ class CosmosWAMRobotWinPolicy:
         return image_tensor
     
     def _get_text_context(self, instruction: str) -> torch.Tensor:
-        """Get text context from cache.
+        """Get text context from cache or online encoder.
         
         Matches training format: "A video recorded from a robot's point of view executing the following instruction: {task}"
         where {task} is the detailed instruction from tasks.jsonl (not task_name).
         """
+        # Use online text encoder if enabled
+        if self.use_online_text_encoder and self.text_encoder is not None:
+            logger.info(f"Computing text embedding online for: {instruction[:50]}...")
+            context = self.text_encoder.encode(instruction)
+            context = context.to(device=self.device, dtype=self.model_dtype)
+            return context.unsqueeze(0)  # [1, 512, 100352]
+        
         # If fixed path is provided, use it directly (skip hash lookup)
         if self.fixed_text_embedding_path is not None:
             logger.info(f"Using fixed text embedding: {self.fixed_text_embedding_path}")
@@ -576,10 +701,27 @@ def get_model(usr_args: Dict[str, Any]):
     if not _is_none_like(fixed_text_embedding_path):
         fixed_text_embedding_path = Path(str(fixed_text_embedding_path)).expanduser().resolve()
     
+    # Get online text encoder settings
+    use_online_text_encoder = _parse_bool(usr_args.get("use_online_text_encoder", False))
+    online_text_encoder_path = usr_args.get("online_text_encoder_path")
+    if not _is_none_like(online_text_encoder_path):
+        online_text_encoder_path = str(Path(str(online_text_encoder_path)).expanduser().resolve())
+    elif use_online_text_encoder:
+        # Try to get from config
+        online_text_encoder_path = cfg.EVALUATION.get("online_text_encoder_path")
+    
+    text_encoder_device = usr_args.get("text_encoder_device")
+    if _is_none_like(text_encoder_device):
+        text_encoder_device = cfg.EVALUATION.get("text_encoder_device")
+    
     # Validate that at least one text embedding source is provided
-    if _is_none_like(text_embedding_cache_dir) and _is_none_like(fixed_text_embedding_path):
+    has_cache = not _is_none_like(text_embedding_cache_dir)
+    has_fixed = not _is_none_like(fixed_text_embedding_path)
+    has_online = use_online_text_encoder and not _is_none_like(online_text_encoder_path)
+    
+    if not (has_cache or has_fixed or has_online):
         raise ValueError(
-            "Either `text_embedding_cache_dir` or `fixed_text_embedding_path` must be provided."
+            "Either `text_embedding_cache_dir`, `fixed_text_embedding_path`, or `use_online_text_encoder` with `online_text_encoder_path` must be provided."
         )
     
     # Get action horizon
@@ -634,6 +776,9 @@ def get_model(usr_args: Dict[str, Any]):
         context_len=context_len,
         fixed_text_embedding_path=fixed_text_embedding_path,
         task_name=task_name,
+        use_online_text_encoder=use_online_text_encoder,
+        online_text_encoder_path=online_text_encoder_path,
+        text_encoder_device=text_encoder_device,
     )
     
     return policy

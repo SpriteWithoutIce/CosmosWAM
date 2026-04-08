@@ -159,6 +159,20 @@ EVALUATION:
   
   # Skip RGB rendering within replan window (faster evaluation)
   skip_get_obs_within_replan: true
+  
+  # Online Text Encoder Settings (for limited VRAM setups like RTX 4090 24GB)
+  # Set use_online_text_encoder: true to compute text embeddings on-the-fly
+  # instead of using precomputed cache. This allows running Reason1-7B on a 
+  # separate GPU from the main inference model.
+  # 
+  # Example dual-GPU setup:
+  #   use_online_text_encoder: true
+  #   online_text_encoder_path: /path/to/Cosmos-Reason1-7B
+  #   text_encoder_device: cuda:0  # GPU 0 for text encoder (~14GB VRAM)
+  #   device: cuda:1               # GPU 1 for main model (remaining VRAM)
+  use_online_text_encoder: false
+  online_text_encoder_path: null
+  text_encoder_device: null
 
 # Multi-run settings for manager
 MULTIRUN:
