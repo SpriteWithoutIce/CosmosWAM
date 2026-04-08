@@ -107,10 +107,11 @@ class ActionBlock(nn.Module):
 
         # Self-attention with AdaLN
         norm_x = self.norm1(x) * (1 + scale_sa) + shift_sa
-        # Ensure norm_x matches attention weight dtype
+        # Ensure norm_x and mask match attention weight dtype
         attn_dtype = self.self_attn.in_proj_weight.dtype
         norm_x_attn = norm_x.to(dtype=attn_dtype)
-        attn_out, _ = self.self_attn(norm_x_attn, norm_x_attn, norm_x_attn, attn_mask=self_mask)
+        self_mask_attn = self_mask.to(dtype=attn_dtype) if self_mask is not None else None
+        attn_out, _ = self.self_attn(norm_x_attn, norm_x_attn, norm_x_attn, attn_mask=self_mask_attn)
         x = x + gate_sa * attn_out.to(dtype=x.dtype)
 
         # Cross-attention to video context with AdaLN
