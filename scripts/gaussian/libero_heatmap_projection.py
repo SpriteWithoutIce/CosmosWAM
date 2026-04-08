@@ -176,16 +176,37 @@ def project_world_to_pixel(
     if verbose:
         print(f"    Camera coords: ({x_c:.3f}, {y_c:.3f}, {z_c:.3f})")
         print(f"    Camera pos (from extrinsic): {extrinsic[:3, 3]}")
+        # 打印相机的朝向（rotation矩阵的第三列是相机z轴在世界坐标系中的方向）
+        print(f"    Camera z-axis (world frame): {extrinsic[:3, 2]}")
     
-    # 点在相机后方 (OpenGL相机看向-z方向，所以z_c < 0才是前方)
-    if z_c >= 0:
-        if verbose:
-            print(f"    Point behind camera (z_c={z_c:.3f} >= 0)")
-        return 0.0, 0.0, False
+    # 关键修复：robosuite的extrinsic矩阵可能不是标准的OpenGL格式
+    # 让我们先检查z_c的符号。如果所有点都是z_c > 0，可能需要翻转判断
+    # 或者使用绝对值进行投影
     
-    # 投影到归一化图像平面（注意z_c是负数，所以除以-z_c）
-    x_norm = x_c / (-z_c)
-    y_norm = y_c / (-z_c)
+    # 方法：无论z_c符号如何，都进行投影（假设相机能看到近距离的点）
+    # 实际 visibility 由投影后的像素位置是否在图像范围内决定
+    use_absolute_z = True  # 使用绝对值进行投影
+    
+    if use_absolute_z:
+        # 使用 |z_c| 进行投影，这样无论点在相机前方还是后方都能投影
+        z_abs = abs(z_c)
+        if z_abs < 1e-6:
+            if verbose:
+                print(f"    Point too close to camera (z_c={z_c:.3f})")
+            return 0.0, 0.0, False
+        x_norm = x_c / z_abs
+        y_norm = y_c / z_abs
+        # 点在相机后方时标记为不可见，但仍然投影
+        is_in_front = (z_c < 0)  # OpenGL: z < 0 是前方
+    else:
+        # 原始方法
+        if z_c >= 0:
+            if verbose:
+                print(f"    Point behind camera (z_c={z_c:.3f} >= 0)")
+            return 0.0, 0.0, False
+        x_norm = x_c / (-z_c)
+        y_norm = y_c / (-z_c)
+        is_in_front = True
     
     # 用内参矩阵转换到像素坐标
     fx, fy = intrinsic[0, 0], intrinsic[1, 1]
@@ -202,7 +223,12 @@ def project_world_to_pixel(
     u = image_width - 1 - u
     v = image_height - 1 - v
     
-    is_visible = (0 <= u < image_width) and (0 <= v < image_height)
+    # 可见性判断：在图像范围内且在相机前方
+    is_in_image = (0 <= u < image_width) and (0 <= v < image_height)
+    is_visible = is_in_image and is_in_front
+    
+    if verbose:
+        print(f"    After flip: u={u:.1f}, v={v:.1f}, in_image={is_in_image}, in_front={is_in_front}, visible={is_visible}")
     
     return float(u), float(v), is_visible
 
@@ -313,6 +339,14 @@ def process_lerobot_episode(
     if state_col is None:
         raise ValueError(f"No state column found in {parquet_path}. Columns: {df.columns.tolist()}")
     
+    # 首先打印相机参数和统计信息
+    print(f"  Camera params:")
+    print(f"    Intrinsic:\n{intrinsic}")
+    print(f"    Extrinsic (camera-to-world):\n{extrinsic}")
+    print(f"    Camera pos in world: {extrinsic[:3, 3]}")
+    print(f"    Image size: {image_width}x{image_height}")
+    print(f"    Heatmap size: {heatmap_width}x{heatmap_width}")
+    
     results = []
     debug_count = 0
     for idx, row in df.iterrows():
@@ -320,14 +354,14 @@ def process_lerobot_episode(
         eef_pos = state[:3]  # 前3维是end-effector position (x, y, z)
         
         # 投影到原始渲染分辨率
-        # 第一帧打印详细调试信息
-        is_first = (idx == 0)
+        # 前3帧打印详细调试信息
+        verbose = (idx < 3)
         u, v, is_visible = project_world_to_pixel(
-            eef_pos, intrinsic, extrinsic, image_height, image_width, verbose=is_first
+            eef_pos, intrinsic, extrinsic, image_height, image_width, verbose=verbose
         )
         
-        # 调试输出前几帧
-        if debug_count < 3:
+        # 调试输出前5帧
+        if debug_count < 5:
             print(f"  Frame {idx}: EEF=({eef_pos[0]:.3f}, {eef_pos[1]:.3f}, {eef_pos[2]:.3f}), "
                   f"Pixel=({u:.1f}, {v:.1f}), Visible={is_visible}")
             debug_count += 1
@@ -351,11 +385,20 @@ def process_lerobot_episode(
     # 统计
     visible_frames = sum(1 for r in results if r["is_visible"])
     print(f"  Summary: {visible_frames}/{len(results)} frames visible")
+    
+    # 检查EEF位置范围
+    all_eef = np.array([r["eef_pos_3d"] for r in results])
+    print(f"  EEF position range:")
+    print(f"    X: [{all_eef[:, 0].min():.3f}, {all_eef[:, 0].max():.3f}]")
+    print(f"    Y: [{all_eef[:, 1].min():.3f}, {all_eef[:, 1].max():.3f}]")
+    print(f"    Z: [{all_eef[:, 2].min():.3f}, {all_eef[:, 2].max():.3f}]")
+    
     if visible_frames == 0:
-        print(f"  Warning: No frames are visible! Check camera params and projection logic.")
-        print(f"  Sample EEF positions: {[r['eef_pos_3d'] for r in results[:3]]}")
-        print(f"  Camera intrinsic:\n{intrinsic}")
-        print(f"  Camera extrinsic:\n{extrinsic}")
+        print(f"  WARNING: No frames are visible!")
+        print(f"  This might be due to:")
+        print(f"    1. Wrong camera parameters (check camera_params.json)")
+        print(f"    2. EEF positions are truly behind the camera")
+        print(f"    3. Coordinate system mismatch (check extrinsic matrix)")
     
     return results
 
