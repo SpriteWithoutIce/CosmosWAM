@@ -459,13 +459,16 @@ class CosmosWAMRobotWinPolicy:
         
         # Denormalize
         # Clip to normalized range before denormalization
-        action = torch.clamp(action, min=-5.0, max=5.0)  # Match training clip range
+        # action = torch.clamp(action, min=-5.0, max=5.0)  # Match training clip range
+        print(action[0])
         action_chunk = self._denormalize_action(action)[0]  # [T, D]
-        
+        print(action_chunk[0])
         # Post-process gripper: RoboTwin uses 16-dim action with gripper at dim 7 and 15
         # Convert from [0,1] (dataset format) to [-1,1] (environment format)
         action_chunk[..., 7] = action_chunk[..., 7] * 2 - 1
         action_chunk[..., 15] = action_chunk[..., 15] * 2 - 1
+
+        print(action_chunk[0])
         
         return action_chunk
     
