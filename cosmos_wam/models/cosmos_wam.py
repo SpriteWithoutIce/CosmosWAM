@@ -64,7 +64,6 @@ class CosmosWAM(nn.Module):
             padding = torch.zeros(latents.shape[0], 2, *latents.shape[2:], 
                                   device=dit_device, dtype=torch.float32)
             latents = torch.cat([latents, padding], dim=1)  # [B, 18, T, H, W]
-
         return {
             "latents": latents,
             "action": action,

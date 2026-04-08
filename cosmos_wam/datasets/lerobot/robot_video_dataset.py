@@ -277,7 +277,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
                 cache_path = found_path
             else:
                 raise FileNotFoundError(
-                    f"Missing text embedding cache: {cache_filename} in {cache_dir} or its subdirectories. "
+                    f"Missing text embedding cache: {cache_filename} in {cache_dir} or its subdirectories. Prompt is: {prompt}"
                     "Run scripts/precompute_text_embeds.py first."
                 )
         payload = torch.load(cache_path, map_location="cpu")

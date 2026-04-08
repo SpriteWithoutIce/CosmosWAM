@@ -12,7 +12,7 @@ model:
 
   dit_config:
     max_img_h: 224
-    max_img_w: 224       # 1 camera only (agentview)
+    max_img_w: 448       # 1 camera only (agentview)
     max_frames: 128
     in_channels: 18
     out_channels: 16
@@ -49,16 +49,19 @@ data:
     _target_: cosmos_wam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
     # LIBERO 4 suites
     dataset_dirs:
-      - ./data/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot
-      - ./data/libero_mujoco3.3.2/libero_object_no_noops_lerobot
-      - ./data/libero_mujoco3.3.2/libero_goal_no_noops_lerobot
-      - ./data/libero_mujoco3.3.2/libero_10_no_noops_lerobot
+      - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot
+      # - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_object_no_noops_lerobot
+      # - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_goal_no_noops_lerobot
+      # - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_10_no_noops_lerobot
     shape_meta:
       images:
         - key: image          # Only agentview (main camera)
           raw_shape: [3, 512, 512]
           shape: [3, 224, 224]
-        # wrist_image removed - using single camera only
+        - key: wrist_image
+        # - key: observation.images.wrist_image
+          raw_shape: [3, 512, 512]
+          shape: [3, 224, 224]
       action:
         - key: default
           raw_shape: 7
@@ -70,16 +73,16 @@ data:
     num_frames: 33
     global_sample_stride: 1
     action_video_freq_ratio: 4      # 20 FPS -> 5Hz action
-    video_size: [224, 224]          # Single camera 224x224
-    val_set_proportion: 0.05
+    video_size: [224, 448]          # Single camera 224x224
+    val_set_proportion: 0.0
     is_training_set: true
     skip_padding_as_possible: false
-    concat_multi_camera: null       # No concatenation needed for single camera
+    concat_multi_camera: "horizontal" 
     processor:
       _target_: cosmos_wam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
       shape_meta: ${data.train.shape_meta}
       num_obs_steps: ${data.train.num_frames}
-      num_output_cameras: 1         # Single camera only (agentview)
+      num_output_cameras: 2
       action_output_dim: 7
       proprio_output_dim: 8
       delta_action_dim_mask:
@@ -98,52 +101,35 @@ data:
         - _target_: cosmos_wam.datasets.lerobot.transforms.image.ToTensor
         - _target_: torchvision.transforms.Resize
           size: [224, 224]
-    text_embedding_cache_dir: ./data/text_embeds_cache/libero
+    text_embedding_cache_dir: /home/jwhe/linyihan/datasets/text_embeds_cache/libero
     context_len: 128
-    use_text_prompt_template: false  # LIBERO: hash raw task description only
-
-  val:
-    _target_: cosmos_wam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
-    pretrained_norm_stats: ${data.train.pretrained_norm_stats}
-    dataset_dirs: ${data.train.dataset_dirs}
-    shape_meta: ${data.train.shape_meta}
-    num_frames: ${data.train.num_frames}
-    global_sample_stride: ${data.train.global_sample_stride}
-    action_video_freq_ratio: ${data.train.action_video_freq_ratio}
-    video_size: ${data.train.video_size}
-    val_set_proportion: ${data.train.val_set_proportion}
-    is_training_set: false
-    skip_padding_as_possible: ${data.train.skip_padding_as_possible}
-    concat_multi_camera: ${data.train.concat_multi_camera}
-    processor: ${data.train.processor}
-    text_embedding_cache_dir: ${data.train.text_embedding_cache_dir}
-    context_len: ${data.train.context_len}
-    use_text_prompt_template: ${data.train.use_text_prompt_template}
+    use_text_prompt_template: true
+    pretrained_norm_stats: /home/jwhe/linyihan/CosmosWAM/datasets_stats/libero_spatial_dataset_stats.json
 
 trainer:
   output_dir: ${output_dir}
   learning_rate: 1.0e-4      # FastWAM LIBERO uses 1e-4
   action_learning_rate: 1.0e-4
   weight_decay: 1.0e-2       # FastWAM uses 1e-2
-  batch_size: 16             # FastWAM LIBERO batch_size
+  batch_size: 32             # FastWAM LIBERO batch_size
   num_workers: 8
   num_epochs: 10
   max_steps: null
   log_every: 10
-  save_every: 2000
+  save_every: 5000
   eval_every: 200
   gradient_accumulation_steps: 1
   max_grad_norm: 1.0
   seed: ${seed}
   resume: false
-  mixed_precision: "bf16"
+  mixed_precision: "no"
   
-  lr_schedule: "cosine"
+  lr_schedule: "constant"
   warmup_steps: 100
   
   wandb:
-    enabled: false
-    project: "cosmos-wam-libero"
+    enabled: true
+    project: "cosmos-wam"
     name: null
   
   deepspeed:
