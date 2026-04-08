@@ -35,6 +35,7 @@ LIBERO End-Effector Heatmap Generation Pipeline
 import json
 import math
 import numpy as np
+import torch
 from pathlib import Path
 from typing import Tuple, Optional, Dict
 import argparse
@@ -554,12 +555,11 @@ def visualize_single_episode(
     output_width = video_width * 2
     output_height = max(video_height, heatmap_height)
     
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (output_width, output_height))
-    
     # 准备colormap
     colormap = cv2.COLORMAP_JET
     
+    # 收集所有帧，然后一次性写入（避免OpenCV编码器问题）
+    frames_to_save = []
     frame_idx = 0
     pbar = tqdm(total=len(projections), desc="Generating video")
     
@@ -613,14 +613,46 @@ def visualize_single_episode(
         
         # 并排拼接
         combined = np.concatenate([frame_bgr, frame_with_heatmap_bgr], axis=1)
-        out.write(combined)
+        frames_to_save.append(combined)
         
         frame_idx += 1
         pbar.update(1)
     
     pbar.close()
     reader.container.close()  # 关闭视频reader
-    out.release()
+    
+    print(f"\nCollected {len(frames_to_save)} frames, saving to video...")
+    
+    # 使用torchvision保存视频（更可靠）
+    try:
+        import torchvision.io as io
+        # 转换回RGB并调整维度为 [T, C, H, W]
+        frames_tensor = torch.from_numpy(np.stack(frames_to_save))  # [T, H, W, 3]
+        frames_tensor = frames_tensor.permute(0, 3, 1, 2)  # [T, C, H, W]
+        
+        # 使用torchvision保存
+        io.write_video(output_path, frames_tensor, fps, video_codec='libx264')
+        print(f"Saved using torchvision (H.264)")
+    except Exception as e:
+        print(f"torchvision save failed: {e}")
+        print("Trying imageio...")
+        try:
+            import imageio
+            writer = imageio.get_writer(output_path, fps=fps, codec='libx264', quality=8)
+            for frame in frames_to_save:
+                writer.append_data(frame)
+            writer.close()
+            print(f"Saved using imageio")
+        except Exception as e2:
+            print(f"imageio save failed: {e2}")
+            print("Falling back to frame sequence...")
+            # 保存为帧序列
+            import os
+            output_dir = output_path.replace('.mp4', '_frames')
+            os.makedirs(output_dir, exist_ok=True)
+            for i, frame in enumerate(frames_to_save):
+                cv2.imwrite(f"{output_dir}/frame_{i:05d}.png", frame)
+            print(f"Saved frame sequence to {output_dir}")
     
     print(f"\nSaved visualization to: {output_path}")
     print(f"Total frames processed: {frame_idx}")
