@@ -472,9 +472,10 @@ class CosmosWAMRobotWinPolicy:
             )
         
         # Denormalize
-        action = torch.clamp(action, min=-5.0, max=5.0)
+        print(action[0])
+        # action = torch.clamp(action, min=-5.0, max=5.0)
         action_chunk = self._denormalize_action(action)[0]  # [T, D]
-        
+        print(action_chunk[0])
         # DEBUG: Print final action
         logger.info(f"Denorm action[0]: {action_chunk[0]}")
         
