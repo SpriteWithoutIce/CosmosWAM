@@ -208,6 +208,8 @@ class CosmosWAMRobotWinPolicy:
         self._build_model(model_cfg)
         
         # Load checkpoint
+        print("------------------------------------------")
+        print("checkpoint_path: ",checkpoint_path)
         self._load_checkpoint(checkpoint_path)
         
         # Verify model weights are loaded (not random)
@@ -319,26 +321,26 @@ class CosmosWAMRobotWinPolicy:
     
     def _load_checkpoint(self, checkpoint_path: Path):
         """Load model checkpoint."""
-        logger.info(f"Loading checkpoint from {checkpoint_path}")
+        print(f"Loading checkpoint from {checkpoint_path}")
         ckpt = torch.load(checkpoint_path, map_location="cpu")
         
         if isinstance(ckpt, dict) and "model" in ckpt:
             state_dict = ckpt["model"]
-            logger.info(f"Checkpoint has 'model' key with {len(state_dict)} keys")
+            print(f"Checkpoint has 'model' key with {len(state_dict)} keys")
             # Check if checkpoint has training info
             if "step" in ckpt:
-                logger.info(f"Checkpoint step: {ckpt['step']}")
+                print(f"Checkpoint step: {ckpt['step']}")
             if "epoch" in ckpt:
-                logger.info(f"Checkpoint epoch: {ckpt['epoch']}")
+                print(f"Checkpoint epoch: {ckpt['epoch']}")
         else:
             state_dict = ckpt
-            logger.info(f"Checkpoint is state_dict with {len(state_dict)} keys")
+            print(f"Checkpoint is state_dict with {len(state_dict)} keys")
         
         # Check a few weight statistics to verify it's not random
         sample_keys = [k for k in state_dict.keys() if 'weight' in k and 'norm' not in k and 'emb' not in k][:3]
         for k in sample_keys:
             v = state_dict[k]
-            logger.info(f"Sample weight '{k}': shape={tuple(v.shape)}, "
+            print(f"Sample weight '{k}': shape={tuple(v.shape)}, "
                        f"mean={v.float().mean().item():.4f}, std={v.float().std().item():.4f}")
         
         # Load state dict (filtering out VAE if present, since we have our own)
@@ -352,11 +354,11 @@ class CosmosWAMRobotWinPolicy:
         missing, unexpected = self.model.load_state_dict(filtered_state, strict=False)
         
         if missing:
-            logger.warning(f"Missing keys ({len(missing)}): {missing[:5]}{'...' if len(missing) > 5 else ''}")
+            print(f"Missing keys ({len(missing)}): {missing[:5]}{'...' if len(missing) > 5 else ''}")
         if unexpected:
-            logger.warning(f"Unexpected keys ({len(unexpected)}): {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+            print(f"Unexpected keys ({len(unexpected)}): {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
         
-        logger.info(f"Loaded checkpoint with {len(filtered_state)} keys")
+        print(f"Loaded checkpoint with {len(filtered_state)} keys")
     
     def _normalize_state(self, state: np.ndarray) -> torch.Tensor:
         """Normalize proprioception state."""
