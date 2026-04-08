@@ -2,23 +2,31 @@
 Precompute text embeddings for Cosmos-WAM training/evaluation.
 
 Supports both LIBERO and RoboTwin datasets by reading meta/tasks.jsonl from dataset_dirs.
+Supports multiple datasets (like FastWAM's precompute_text_embeds.py).
 
 Usage:
-    # Single GPU
+    # Single dataset
     python scripts/precompute_text_embeds.py \
         --dataset_dir /path/to/dataset \
         --output_dir ./data/text_embeds_cache/my_dataset \
         --model_path /path/to/Cosmos-Reason1-7B \
         --context_len 128
 
-    # Multi-GPU
-    torchrun --standalone --nproc_per_node=4 scripts/precompute_text_embeds.py \
-        --dataset_dir /path/to/dataset \
+    # Multiple datasets (like FastWAM)
+    python scripts/precompute_text_embeds.py \
+        --dataset_dir /path/to/dataset1 /path/to/dataset2 /path/to/dataset3 \
         --output_dir ./data/text_embeds_cache/my_dataset \
         --model_path /path/to/Cosmos-Reason1-7B \
         --context_len 128
 
-Config options (via command line or Hydra):
+    # Multi-GPU
+    torchrun --standalone --nproc_per_node=4 scripts/precompute_text_embeds.py \
+        --dataset_dir /path/to/dataset1 /path/to/dataset2 \
+        --output_dir ./data/text_embeds_cache/my_dataset \
+        --model_path /path/to/Cosmos-Reason1-7B \
+        --context_len 128
+
+Config options:
     --use_prompt_template: If True, hash = SHA256(DEFAULT_PROMPT.format(task=task))
                           If False, hash = SHA256(task) directly
     --default_prompt: The prompt template to use (default: Cosmos-WAM template)
@@ -59,8 +67,9 @@ def parse_args():
     parser.add_argument(
         "--dataset_dir",
         type=str,
+        nargs="+",
         required=True,
-        help="Dataset directory containing meta/tasks.jsonl",
+        help="Dataset directory(s) containing meta/tasks.jsonl. Can specify multiple.",
     )
     parser.add_argument(
         "--output_dir",
@@ -119,46 +128,48 @@ def init_distributed():
     return True, dist.get_rank(), dist.get_world_size()
 
 
-def read_tasks_from_jsonl(dataset_dir: str) -> List[str]:
-    """Read unique task descriptions from meta/tasks.jsonl.
+def read_tasks_from_jsonl(dataset_dirs: List[str]) -> List[str]:
+    """Read unique task descriptions from multiple dataset meta/tasks.jsonl files.
     
     Expected format (LIBERO & RoboTwin):
         {"task_index": 0, "task": "turn on the stove..."}
         {"task_index": 1, "task": "put the pot on the stove..."}
     """
-    dataset_path = Path(dataset_dir)
-    tasks_file = dataset_path / "meta" / "tasks.jsonl"
-    
-    if not tasks_file.exists():
-        # Try alternative path structure (some datasets have different layouts)
-        alt_tasks_file = dataset_path / "tasks.jsonl"
-        if alt_tasks_file.exists():
-            tasks_file = alt_tasks_file
-        else:
-            raise FileNotFoundError(
-                f"tasks.jsonl not found in {dataset_path}/meta/ or {dataset_path}/"
-            )
-
-    tasks = []
+    all_tasks = []
     seen = set()
     
-    with tasks_file.open("r", encoding="utf-8") as f:
-        for line_idx, line in enumerate(f, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-                task_desc = record.get("task", "")
-                if task_desc and task_desc not in seen:
-                    seen.add(task_desc)
-                    tasks.append(task_desc)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse JSON at line {line_idx}: {e}")
+    for dataset_dir in dataset_dirs:
+        dataset_path = Path(dataset_dir)
+        tasks_file = dataset_path / "meta" / "tasks.jsonl"
+        
+        if not tasks_file.exists():
+            # Try alternative path structure (some datasets have different layouts)
+            alt_tasks_file = dataset_path / "tasks.jsonl"
+            if alt_tasks_file.exists():
+                tasks_file = alt_tasks_file
+            else:
+                logger.warning(f"tasks.jsonl not found in {dataset_path}, skipping")
                 continue
 
-    logger.info(f"Loaded {len(tasks)} unique tasks from {tasks_file}")
-    return tasks
+        with tasks_file.open("r", encoding="utf-8") as f:
+            for line_idx, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    task_desc = record.get("task", "")
+                    if task_desc and task_desc not in seen:
+                        seen.add(task_desc)
+                        all_tasks.append(task_desc)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse JSON at line {line_idx} in {tasks_file}: {e}")
+                    continue
+
+        logger.info(f"Loaded from {dataset_path}: {len([t for t in all_tasks if t in seen])} unique tasks so far")
+    
+    logger.info(f"Total unique tasks from {len(dataset_dirs)} dataset(s): {len(all_tasks)}")
+    return all_tasks
 
 
 def format_prompt(task: str, use_template: bool, template: str) -> str:
@@ -298,7 +309,9 @@ def main():
     
     # Read tasks
     if rank == 0:
-        logger.info(f"Reading tasks from: {args.dataset_dir}")
+        logger.info(f"Reading tasks from {len(args.dataset_dir)} dataset(s):")
+        for d in args.dataset_dir:
+            logger.info(f"  - {d}")
     
     all_tasks = read_tasks_from_jsonl(args.dataset_dir)
     
