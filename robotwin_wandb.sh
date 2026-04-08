@@ -54,14 +54,14 @@ GPU_ID=1
 TASKS=(
     "adjust_bottle"
     "beat_block_hammer"
-    "click_alarmclock"
-    "click_bell"
-    "grab_roller"
-    "handover_block"
-    "lift_pot"
-    "open_laptop"
-    "pick_diverse_bottles"
-    "place_bread_basket"
+    # "blocks_ranking_rgb"
+    # "blocks_ranking_size"
+    # "click_alarmclock"
+    # "click_bell"
+    # "dump_bin_bigbin"
+    # "grab_roller"
+    # "handover_block"
+    # "handover_mic"
 )
 
 # Check if wandb is installed

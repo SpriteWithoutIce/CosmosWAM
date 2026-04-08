@@ -8,3 +8,5 @@ log/
 evaluate_results/
 datasets_stats/
 *.mp4
+wandb/
+robotwin_bash/

@@ -35,14 +35,14 @@ GPU_PAIRS=("0,1" "2,3" "4,5" "6,7")
 TASKS=(
     "adjust_bottle"
     "beat_block_hammer"
+    "blocks_ranking_rgb"
+    "blocks_ranking_size"
     "click_alarmclock"
     "click_bell"
+    "dump_bin_bigbin"
     "grab_roller"
     "handover_block"
     "handover_mic"
-    "hanging_mug"
-    "lift_pot"
-    "move_can_pot"
 )
 
 # Create output directory
