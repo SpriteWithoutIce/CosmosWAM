@@ -192,9 +192,11 @@ class CosmosWAM(nn.Module):
         # Action flow matching denoising
         action = torch.randn(B, action_horizon, self.action_head.action_dim, device=device)
         for i in range(num_inference_steps):
-            t = torch.full((B,), 1.0 - i / num_inference_steps, device=device, dtype=torch.float32)
+            # Use 1-t to match training: t=0 is noise, t=1 is action
+            t = torch.full((B,), i / num_inference_steps, device=device, dtype=torch.float32)
             pred = self.action_head(action, video_cond_cache, t)
-            dt = -1.0 / num_inference_steps
+            # Flow from noise to action: dx/dt = pred
+            dt = 1.0 / num_inference_steps
             action = action + dt * pred
             # DEBUG: Print every few steps
             if i % 4 == 0 or i == num_inference_steps - 1:
