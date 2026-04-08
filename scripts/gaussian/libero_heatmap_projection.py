@@ -223,9 +223,10 @@ def project_world_to_pixel(
     u = image_width - 1 - u
     v = image_height - 1 - v
     
-    # 可见性判断：在图像范围内且在相机前方
+    # 可见性判断：暂时只检查是否在图像范围内（用于调试）
     is_in_image = (0 <= u < image_width) and (0 <= v < image_height)
-    is_visible = is_in_image and is_in_front
+    # 强制显示所有在图像范围内的点（忽略in_front检查）
+    is_visible = is_in_image  # DEBUG: 临时禁用 in_front 检查
     
     if verbose:
         print(f"    After flip: u={u:.1f}, v={v:.1f}, in_image={is_in_image}, in_front={is_in_front}, visible={is_visible}")
@@ -384,7 +385,7 @@ def process_lerobot_episode(
     
     # 统计
     visible_frames = sum(1 for r in results if r["is_visible"])
-    print(f"  Summary: {visible_frames}/{len(results)} frames visible")
+    print(f"  Summary: {visible_frames}/{len(results)} frames visible (in_image only, in_front check disabled)")
     
     # 检查EEF位置范围
     all_eef = np.array([r["eef_pos_3d"] for r in results])
@@ -393,12 +394,16 @@ def process_lerobot_episode(
     print(f"    Y: [{all_eef[:, 1].min():.3f}, {all_eef[:, 1].max():.3f}]")
     print(f"    Z: [{all_eef[:, 2].min():.3f}, {all_eef[:, 2].max():.3f}]")
     
+    # 检查投影位置范围
+    all_u = np.array([r["pixel_u"] for r in results])
+    all_v = np.array([r["pixel_v"] for r in results])
+    print(f"  Projected pixel range:")
+    print(f"    U: [{all_u.min():.1f}, {all_u.max():.1f}] (image width: {image_width})")
+    print(f"    V: [{all_v.min():.1f}, {all_v.max():.1f}] (image height: {image_height})")
+    
     if visible_frames == 0:
-        print(f"  WARNING: No frames are visible!")
-        print(f"  This might be due to:")
-        print(f"    1. Wrong camera parameters (check camera_params.json)")
-        print(f"    2. EEF positions are truly behind the camera")
-        print(f"    3. Coordinate system mismatch (check extrinsic matrix)")
+        print(f"  WARNING: No frames are visible in image!")
+        print(f"  Check if pixel coordinates are within image bounds.")
     
     return results
 
