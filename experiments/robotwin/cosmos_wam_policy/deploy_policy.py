@@ -142,7 +142,7 @@ def _get_text_embedding_cache(prompt: str, cache_dir: Path, context_len: int = 5
             if f"{hashed}.t5_len{context_len}.pt" in files:
                 cache_path = Path(root) / f"{hashed}.t5_len{context_len}.pt"
                 break
-    
+    print(prompt, hashed)
     if not cache_path.exists():
         raise FileNotFoundError(f"Missing text embedding cache for prompt: {prompt[:50]}...")
     
