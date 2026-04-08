@@ -192,12 +192,18 @@ class CosmosWAM(nn.Module):
 
         # Action flow matching denoising
         action = torch.randn(B, action_horizon, self.action_head.action_dim, device=device)
+        print(f"[COSMOS_WAM] Initial action noise: mean={action.mean().item():.4f}, std={action.std().item():.4f}", flush=True)
         for i in range(num_inference_steps):
             t = torch.full((B,), 1.0 - i / num_inference_steps, device=device, dtype=torch.float32)
             pred = self.action_head(action, video_cond_cache, t)
             dt = -1.0 / num_inference_steps
             action = action + dt * pred
+            if i % 5 == 0 or i == num_inference_steps - 1:
+                print(f"[COSMOS_WAM] Step {i}: t={t.item():.3f}, pred_mean={pred.mean().item():.4f}, "
+                      f"action_mean={action.mean().item():.4f}, action_std={action.std().item():.4f}", flush=True)
 
+        print(f"[COSMOS_WAM] Final action: mean={action.mean().item():.4f}, std={action.std().item():.4f}, "
+              f"min={action.min().item():.4f}, max={action.max().item():.4f}", flush=True)
         return action
 
     @torch.no_grad()

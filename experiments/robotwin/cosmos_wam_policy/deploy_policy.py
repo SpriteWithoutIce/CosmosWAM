@@ -319,27 +319,27 @@ class CosmosWAMRobotWinPolicy:
     
     def _load_checkpoint(self, checkpoint_path: Path):
         """Load model checkpoint."""
-        logger.info(f"Loading checkpoint from {checkpoint_path}")
+        print(f"[DEBUG] Loading checkpoint from {checkpoint_path}", flush=True)
         ckpt = torch.load(checkpoint_path, map_location="cpu")
         
         if isinstance(ckpt, dict) and "model" in ckpt:
             state_dict = ckpt["model"]
-            logger.info(f"Checkpoint has 'model' key with {len(state_dict)} keys")
-            # Check if checkpoint has training info
+            print(f"[DEBUG] Checkpoint has 'model' key with {len(state_dict)} keys", flush=True)
             if "step" in ckpt:
-                logger.info(f"Checkpoint step: {ckpt['step']}")
+                print(f"[DEBUG] Checkpoint step: {ckpt['step']}", flush=True)
             if "epoch" in ckpt:
-                logger.info(f"Checkpoint epoch: {ckpt['epoch']}")
+                print(f"[DEBUG] Checkpoint epoch: {ckpt['epoch']}", flush=True)
         else:
             state_dict = ckpt
-            logger.info(f"Checkpoint is state_dict with {len(state_dict)} keys")
+            print(f"[DEBUG] Checkpoint is state_dict with {len(state_dict)} keys", flush=True)
         
-        # Check a few weight statistics to verify it's not random
-        sample_keys = [k for k in state_dict.keys() if 'weight' in k and 'norm' not in k and 'emb' not in k][:3]
-        for k in sample_keys:
-            v = state_dict[k]
-            logger.info(f"Sample weight '{k}': shape={tuple(v.shape)}, "
-                       f"mean={v.float().mean().item():.4f}, std={v.float().std().item():.4f}")
+        # Check action_head weights specifically
+        action_head_keys = [k for k in state_dict.keys() if 'action_head' in k and 'weight' in k]
+        print(f"[DEBUG] Found {len(action_head_keys)} action_head weight keys", flush=True)
+        if action_head_keys:
+            for k in action_head_keys[:3]:
+                v = state_dict[k]
+                print(f"[DEBUG] ActionHead weight '{k}': shape={tuple(v.shape)}, mean={v.float().mean().item():.6f}, std={v.float().std().item():.6f}", flush=True)
         
         # Load state dict (filtering out VAE if present, since we have our own)
         filtered_state = {k: v for k, v in state_dict.items() if not k.startswith("vae.")}
@@ -352,11 +352,11 @@ class CosmosWAMRobotWinPolicy:
         missing, unexpected = self.model.load_state_dict(filtered_state, strict=False)
         
         if missing:
-            logger.warning(f"Missing keys ({len(missing)}): {missing[:5]}{'...' if len(missing) > 5 else ''}")
+            print(f"[DEBUG] Missing keys ({len(missing)}): {missing[:5]}{'...' if len(missing) > 5 else ''}", flush=True)
         if unexpected:
-            logger.warning(f"Unexpected keys ({len(unexpected)}): {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+            print(f"[DEBUG] Unexpected keys ({len(unexpected)}): {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}", flush=True)
         
-        logger.info(f"Loaded checkpoint with {len(filtered_state)} keys")
+        print(f"[DEBUG] Loaded checkpoint with {len(filtered_state)} keys", flush=True)
     
     def _normalize_state(self, state: np.ndarray) -> torch.Tensor:
         """Normalize proprioception state."""
@@ -385,17 +385,17 @@ class CosmosWAMRobotWinPolicy:
         normalizer = self.processor.normalizer.normalizers["action"][action_key]
         
         # DEBUG: Print raw model output stats
-        logger.info(f"Raw action (before denorm): shape={action.shape}, "
-                   f"mean={action.mean().item():.4f}, std={action.std().item():.4f}, "
-                   f"min={action.min().item():.4f}, max={action.max().item():.4f}")
+        print(f"[DEBUG] Raw action (before denorm): shape={action.shape}, "
+              f"mean={action.mean().item():.4f}, std={action.std().item():.4f}, "
+              f"min={action.min().item():.4f}, max={action.max().item():.4f}", flush=True)
         
         denorm = normalizer.backward(action.to(dtype=torch.float32, device="cpu"))
         
         # DEBUG: Print denormalized action stats
-        logger.info(f"Denorm action: shape={denorm.shape}, "
-                   f"mean={denorm.mean().item():.4f}, std={denorm.std().item():.4f}, "
-                   f"min={denorm.min().item():.4f}, max={denorm.max().item():.4f}")
-        logger.info(f"First action: {denorm[0, 0].numpy()}")
+        print(f"[DEBUG] Denorm action: shape={denorm.shape}, "
+              f"mean={denorm.mean().item():.4f}, std={denorm.std().item():.4f}, "
+              f"min={denorm.min().item():.4f}, max={denorm.max().item():.4f}", flush=True)
+        print(f"[DEBUG] First action: {denorm[0, 0].numpy()}", flush=True)
         
         return denorm.numpy()
     
@@ -489,13 +489,15 @@ class CosmosWAMRobotWinPolicy:
                 num_inference_steps=self.num_inference_steps,
             )
         
+        # DEBUG: Print raw model output
+        print(f"[DEBUG] Model output action stats: mean={action.mean().item():.4f}, "
+              f"std={action.std().item():.4f}, min={action.min().item():.4f}, max={action.max().item():.4f}", flush=True)
+        
         # Denormalize
-        print(action[0])
-        # action = torch.clamp(action, min=-5.0, max=5.0)
         action_chunk = self._denormalize_action(action)[0]  # [T, D]
-        print(action_chunk[0])
+        
         # DEBUG: Print final action
-        logger.info(f"Denorm action[0]: {action_chunk[0]}")
+        print(f"[DEBUG] Final action_chunk[0]: {action_chunk[0]}", flush=True)
         
         return action_chunk
     
