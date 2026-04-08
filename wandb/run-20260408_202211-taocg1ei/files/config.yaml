@@ -1,0 +1,90 @@
+_wandb:
+    value:
+        cli_version: 0.25.1
+        e:
+            iiks35zqwolr5xkdjdn4cgzcbliep2en:
+                cpu_count: 72
+                cpu_count_logical: 144
+                cudaVersion: "12.8"
+                disk:
+                    /:
+                        total: "472168296448"
+                        used: "364402409472"
+                email: 22373442@buaa.edu.cn
+                executable: /root/miniconda3/envs/cosmos/bin/python3
+                git:
+                    commit: e9d8d03c566b8db882b866c6f561a2a0b0ce03c4
+                    remote: git@github.com:SpriteWithoutIce/CosmosWAM.git
+                gpu: NVIDIA GeForce RTX 4090
+                gpu_count: 8
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-7f255073-47c7-09f8-2dc3-83c1dc9d6760
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-d7629935-0ad9-4297-fc62-6e7ad717d7d8
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-52175ccc-cc9d-7083-3f3c-dbd6ae5af96c
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-0f9abe4c-8736-f3b7-7ccf-91408c9e1462
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-e4b3ab52-3fb8-8554-6e49-22adde4fc040
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-0528b6c1-8a44-7455-5d30-28a4e2a5a801
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-c1b56020-ba3f-8b7f-c13a-89f6fe1852a9
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-f00d2b2c-36e0-b737-fc50-11a368da538e
+                host: xyz-4090
+                memory:
+                    total: "539886333952"
+                os: Linux-5.15.0-136-generic-x86_64-with-glibc2.35
+                program: <stdin>
+                python: CPython 3.10.20
+                root: /root/linyihan/CosmosWAM
+                startedAt: "2026-04-08T12:22:11.133109Z"
+                writerId: iiks35zqwolr5xkdjdn4cgzcbliep2en
+        m: []
+        python_version: 3.10.20
+        t:
+            "3":
+                - 13
+                - 15
+                - 16
+            "4": 3.10.20
+            "5": 0.25.1
+            "12": 0.25.1
+            "13": linux-x86_64
+checkpoint:
+    value: /mnt/data/linyihan/ckpt/step_0014000_bf16.pt
+num_episodes:
+    value: 50
+num_inference_steps:
+    value: 20
+num_parallel:
+    value: 4
+replan_steps:
+    value: 8

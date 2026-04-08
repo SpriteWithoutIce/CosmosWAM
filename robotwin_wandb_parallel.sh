@@ -1,9 +1,13 @@
 #!/bin/bash
 # Cosmos-WAM RoboTwin Parallel Evaluation with WandB
 # Uses 8 GPUs to run tasks in parallel (2 GPUs per task)
-# This version uses GNU parallel for better process management
 
 set -e
+
+# Check if running in conda environment
+if [ -z "$CONDA_DEFAULT_ENV" ]; then
+    echo "Warning: Not running in a conda environment. Make sure wandb is installed."
+fi
 
 # Configuration
 CKPT="/mnt/data/linyihan/ckpt/step_0014000_bf16.pt"
@@ -24,33 +28,21 @@ INSTRUCTION_TYPE="seen"
 MIXED_PRECISION="bf16"
 
 # GPU Configuration
-# With 8 GPUs, we can run 4 tasks in parallel
-# Each task uses: 1 GPU for Reason1, 1 GPU for Main model
 NUM_PARALLEL=4
 GPU_PAIRS=("0,1" "2,3" "4,5" "6,7")
 
-# Tasks to evaluate (will be distributed across GPU pairs)
+# Tasks to evaluate
 TASKS=(
     "adjust_bottle"
     "beat_block_hammer"
+    "blocks_ranking_rgb"
+    "blocks_ranking_size"
     "click_alarmclock"
     "click_bell"
+    "dump_bin_bigbin"
     "grab_roller"
     "handover_block"
     "handover_mic"
-    "hanging_mug"
-    "lift_pot"
-    "move_can_pot"
-    "move_pillbottle_pad"
-    "move_playingcard_away"
-    "move_stapler_pad"
-    "open_laptop"
-    "open_microwave"
-    "pick_diverse_bottles"
-    "pick_dual_bottles"
-    "place_a2b_left"
-    "place_a2b_right"
-    "place_bread_basket"
 )
 
 # Create output directory
@@ -58,14 +50,12 @@ OUTPUT_DIR="./evaluate_results/parallel_${WANDB_RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
 # Check dependencies
-if ! command -v parallel &> /dev/null; then
-    echo "Installing GNU parallel..."
-    apt-get update && apt-get install -y parallel || true
-fi
-
 if ! python -c "import wandb" 2>/dev/null; then
-    echo "Installing wandb..."
-    pip install wandb
+    echo "Error: wandb is not installed. Please install it first:"
+    echo "  pip install wandb"
+    echo "or if using conda:"
+    echo "  conda install -c conda-forge wandb"
+    exit 1
 fi
 
 # Login to wandb
@@ -77,7 +67,7 @@ echo "=============================================="
 echo "Total tasks: ${#TASKS[@]}"
 echo "Parallel jobs: $NUM_PARALLEL"
 echo "GPUs per job: 2"
-echo "Total GPUs: 8"
+echo "Total GPUs used: $((NUM_PARALLEL * 2))"
 echo "Output dir: $OUTPUT_DIR"
 echo "=============================================="
 
@@ -86,10 +76,41 @@ echo ""
 echo "GPU Status:"
 nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv | head -9
 
+# Create a Python script for the WandB logger
+cat > "$OUTPUT_DIR/wandb_logger.py" << 'EOF'
+import sys
+import re
+import wandb
+import os
+
+def main():
+    task_name = sys.argv[1]
+    log_file = sys.argv[2]
+    
+    # Connect to wandb
+    run_id = os.environ.get("WANDB_RUN_ID")
+    wandb.init(project=os.environ.get("WANDB_PROJECT"), id=run_id, resume="must")
+    
+    with open(log_file, "r") as f:
+        for line in f:
+            match = re.search(r"Success rate:\s*(\d+)/(\d+)\s*=>\s*([\d.]+)%", line)
+            if match:
+                suc, test_num, rate = int(match.group(1)), int(match.group(2)), float(match.group(3))
+                wandb.log({
+                    f"{task_name}/cumulative_success_rate": rate,
+                    f"{task_name}/success_count": suc,
+                    f"{task_name}/episode": test_num,
+                }, step=test_num)
+    
+    wandb.finish()
+
+if __name__ == "__main__":
+    main()
+EOF
+
 # Initialize WandB run
 python3 << EOF
 import wandb
-import os
 
 wandb.init(
     project="$WANDB_PROJECT",
@@ -98,15 +119,21 @@ wandb.init(
     tags=["bf16", "step14000", "replan8", "parallel", "8gpu"],
     config={
         "checkpoint": "$CKPT",
-        "tasks": $(printf '%s\n' "${TASKS[@]}" | jq -R . | jq -s .),
         "num_episodes": $NUM_EPISODES,
         "num_parallel": $NUM_PARALLEL,
         "num_inference_steps": $NUM_INFERENCE_STEPS,
         "replan_steps": $REPLAN_STEPS,
     },
 )
-print(f"WandB run initialized")
+print(f"WandB run initialized: {wandb.run.url}")
+# Save run ID for child processes
+with open("$OUTPUT_DIR/wandb_run_id.txt", "w") as f:
+    f.write(wandb.run.id)
 EOF
+
+# Save WANDB_RUN_ID and PROJECT for child processes
+export WANDB_RUN_ID=$(cat "$OUTPUT_DIR/wandb_run_id.txt")
+export WANDB_PROJECT="$WANDB_PROJECT"
 
 # Create task list file
 TASK_FILE="$OUTPUT_DIR/task_list.txt"
@@ -127,65 +154,30 @@ run_task() {
     export CUDA_VISIBLE_DEVICES="$GPU_PAIR"
     export PYTHONUNBUFFERED=1
     
-    # Create a Python script for this task with WandB logging
-    python3 << PYEOF
-import subprocess
-import sys
-import re
-import wandb
-import os
-
-# Re-initialize wandb in this process
-wandb.init(project="$WANDB_PROJECT", id=os.environ.get("WANDB_RUN_ID"), resume="must")
-
-cmd = [
-    sys.executable,
-    "experiments/robotwin/eval_robotwin_single.py",
-    f"ckpt=$CKPT",
-    f"EVALUATION.task_name=$TASK_NAME",
-    f"EVALUATION.eval_num_episodes=$NUM_EPISODES",
-    f"EVALUATION.robotwin_root=$ROBOTWIN_ROOT",
-    f"EVALUATION.dataset_stats_path=$DATASET_STATS",
-    f"EVALUATION.num_inference_steps=$NUM_INFERENCE_STEPS",
-    f"EVALUATION.replan_steps=$REPLAN_STEPS",
-    f"EVALUATION.instruction_type=$INSTRUCTION_TYPE",
-    f"mixed_precision=$MIXED_PRECISION",
-    f"gpu_id=$MODEL_GPU",
-    "EVALUATION.use_online_text_encoder=true",
-    f"EVALUATION.online_text_encoder_path=$ONLINE_TEXT_ENCODER_PATH",
-    "EVALUATION.text_encoder_device=cuda:0",
-    "EVALUATION.device=cuda:1",
-]
-
-process = subprocess.Popen(
-    cmd,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT,
-    text=True,
-    bufsize=1,
-)
-
-with open("$LOG_FILE", "w") as f:
-    for line in process.stdout:
-        f.write(line)
-        f.flush()
-        print(f"[$TASK_NAME] {line}", end="")
-        
-        # Parse success rate
-        match = re.search(r"Success rate:\s*(\d+)/(\d+)\s*=>\s*([\d.]+)%", line)
-        if match:
-            suc, test_num, rate = int(match.group(1)), int(match.group(2)), float(match.group(3))
-            wandb.log({
-                f"${TASK_NAME}/cumulative_success_rate": rate,
-                f"${TASK_NAME}/success_count": suc,
-                f"${TASK_NAME}/episode": test_num,
-            }, step=test_num)
-
-process.wait()
-exit(process.returncode)
-PYEOF
+    # Run the task
+    python experiments/robotwin/eval_robotwin_single.py \
+        ckpt="$CKPT" \
+        EVALUATION.task_name="$TASK_NAME" \
+        EVALUATION.eval_num_episodes="$NUM_EPISODES" \
+        EVALUATION.robotwin_root="$ROBOTWIN_ROOT" \
+        EVALUATION.dataset_stats_path="$DATASET_STATS" \
+        EVALUATION.num_inference_steps="$NUM_INFERENCE_STEPS" \
+        EVALUATION.replan_steps="$REPLAN_STEPS" \
+        EVALUATION.instruction_type="$INSTRUCTION_TYPE" \
+        mixed_precision="$MIXED_PRECISION" \
+        gpu_id="$MODEL_GPU" \
+        EVALUATION.use_online_text_encoder=true \
+        EVALUATION.online_text_encoder_path="$ONLINE_TEXT_ENCODER_PATH" \
+        EVALUATION.text_encoder_device="cuda:0" \
+        EVALUATION.device="cuda:1" \
+        > "$LOG_FILE" 2>&1
     
     local EXIT_CODE=$?
+    
+    # Log to wandb
+    WANDB_PROJECT="$WANDB_PROJECT" WANDB_RUN_ID="$WANDB_RUN_ID" \
+        python3 "$OUTPUT_DIR/wandb_logger.py" "$TASK_NAME" "$LOG_FILE" &
+    
     echo "[$(date)] Task $TASK_NAME completed with exit code $EXIT_CODE"
     return $EXIT_CODE
 }
@@ -193,60 +185,46 @@ PYEOF
 export -f run_task
 export CKPT ROBOTWIN_ROOT DATASET_STATS ONLINE_TEXT_ENCODER_PATH
 export NUM_EPISODES NUM_INFERENCE_STEPS REPLAN_STEPS INSTRUCTION_TYPE MIXED_PRECISION
-export OUTPUT_DIR WANDB_PROJECT
+export OUTPUT_DIR WANDB_PROJECT WANDB_RUN_ID
 
-# Save WANDB_RUN_ID for child processes
-export WANDB_RUN_ID=$(python3 -c "import wandb; print(wandb.run.id)")
-
-# Run tasks in parallel using GNU parallel
+# Run tasks in parallel
 echo ""
 echo "Starting parallel evaluation..."
 echo ""
 
-if command -v parallel &> /dev/null; then
-    # Use GNU parallel
-    parallel --jobs $NUM_PARALLEL --line-buffer \
-        --joblog "$OUTPUT_DIR/parallel.log" \
-        run_task {1} {2} {#} \
-        :::: "$TASK_FILE" \
-        ::: "${GPU_PAIRS[@]}"
-else
-    # Fallback: manual background process management
-    echo "GNU parallel not available, using manual process management..."
+idx=0
+for task in "${TASKS[@]}"; do
+    gpu_pair=${GPU_PAIRS[$((idx % NUM_PARALLEL))]}
+    run_task "$task" "$gpu_pair" $((idx + 1)) &
     
-    idx=0
-    for task in "${TASKS[@]}"; do
-        gpu_pair=${GPU_PAIRS[$((idx % NUM_PARALLEL))]}
-        run_task "$task" "$gpu_pair" $((idx + 1)) &
-        
-        idx=$((idx + 1))
-        
-        # Wait if we've launched NUM_PARALLEL jobs
-        if [ $((idx % NUM_PARALLEL)) -eq 0 ] && [ $idx -lt ${#TASKS[@]} ]; then
-            echo "Waiting for batch to complete..."
-            wait
-        fi
-    done
+    idx=$((idx + 1))
     
-    # Wait for remaining jobs
-    wait
-fi
+    # Wait if we've launched NUM_PARALLEL jobs
+    if [ $((idx % NUM_PARALLEL)) -eq 0 ] && [ $idx -lt ${#TASKS[@]} ]; then
+        echo "Waiting for batch to complete..."
+        wait
+    fi
+done
+
+# Wait for all jobs
+echo "Waiting for all tasks to complete..."
+wait
 
 # Finalize WandB
 python3 << EOF
 import wandb
 import os
-import json
+import glob
+import re
 
-wandb.init(project="$WANDB_PROJECT", id=os.environ.get("WANDB_RUN_ID"), resume="must")
+run_id = open("$OUTPUT_DIR/wandb_run_id.txt").read().strip()
+wandb.init(project="$WANDB_PROJECT", id=run_id, resume="must")
 
 # Compute overall statistics
 results = []
-import glob
 for log_file in glob.glob("$OUTPUT_DIR/*.log"):
     with open(log_file) as f:
         content = f.read()
-        # Find final success rate
         matches = re.findall(r"Success rate:\s*(\d+)/(\d+)\s*=>\s*([\d.]+)%", content)
         if matches:
             suc, total, rate = matches[-1]
@@ -256,14 +234,13 @@ if results:
     avg_rate = sum(results) / len(results)
     wandb.summary["overall/average_success_rate"] = avg_rate
     wandb.summary["overall/num_tasks"] = len(results)
+    print(f"Average success rate: {avg_rate:.1f}%")
 
 wandb.finish()
-print(f"Average success rate: {avg_rate:.1f}%" if results else "No results")
 EOF
 
 echo ""
 echo "=============================================="
 echo "All evaluations completed!"
 echo "Results saved to: $OUTPUT_DIR"
-echo "WandB run: $WANDB_RUN_NAME"
 echo "=============================================="
