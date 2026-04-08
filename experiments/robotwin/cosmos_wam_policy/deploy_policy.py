@@ -208,6 +208,8 @@ class CosmosWAMRobotWinPolicy:
         self._build_model(model_cfg)
         
         # Load checkpoint
+        print("------------------------------------------")
+        print("checkpoint_path: ",checkpoint_path)
         self._load_checkpoint(checkpoint_path)
         
         # Verify model weights are loaded (not random)
