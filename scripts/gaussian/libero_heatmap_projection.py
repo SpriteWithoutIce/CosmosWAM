@@ -146,6 +146,7 @@ def project_world_to_pixel(
     extrinsic: np.ndarray,        # (4, 4) camera-to-world变换
     image_height: int,
     image_width: int,
+    verbose: bool = False,         # 是否打印调试信息
 ) -> Tuple[float, float, bool]:
     """
     将世界坐标系中的3D点投影到图像像素坐标。
@@ -172,8 +173,14 @@ def project_world_to_pixel(
     # 所以需要把点投影到相机前方（-z方向）
     x_c, y_c, z_c = point_camera[0], point_camera[1], point_camera[2]
     
-    # 点在相机后方
+    if verbose:
+        print(f"    Camera coords: ({x_c:.3f}, {y_c:.3f}, {z_c:.3f})")
+        print(f"    Camera pos (from extrinsic): {extrinsic[:3, 3]}")
+    
+    # 点在相机后方 (OpenGL相机看向-z方向，所以z_c < 0才是前方)
     if z_c >= 0:
+        if verbose:
+            print(f"    Point behind camera (z_c={z_c:.3f} >= 0)")
         return 0.0, 0.0, False
     
     # 投影到归一化图像平面（注意z_c是负数，所以除以-z_c）
@@ -186,6 +193,9 @@ def project_world_to_pixel(
     
     u = fx * x_norm + cx  # 列
     v = fy * y_norm + cy  # 行
+    
+    if verbose:
+        print(f"    Before flip: u={u:.1f}, v={v:.1f}")
     
     # robosuite在渲染后做了 [::-1, ::-1] 翻转（见libero_utils.py）
     # 这意味着图像上下左右都翻转了
@@ -304,14 +314,23 @@ def process_lerobot_episode(
         raise ValueError(f"No state column found in {parquet_path}. Columns: {df.columns.tolist()}")
     
     results = []
+    debug_count = 0
     for idx, row in df.iterrows():
         state = np.array(row[state_col])
         eef_pos = state[:3]  # 前3维是end-effector position (x, y, z)
         
         # 投影到原始渲染分辨率
+        # 第一帧打印详细调试信息
+        is_first = (idx == 0)
         u, v, is_visible = project_world_to_pixel(
-            eef_pos, intrinsic, extrinsic, image_height, image_width
+            eef_pos, intrinsic, extrinsic, image_height, image_width, verbose=is_first
         )
+        
+        # 调试输出前几帧
+        if debug_count < 3:
+            print(f"  Frame {idx}: EEF=({eef_pos[0]:.3f}, {eef_pos[1]:.3f}, {eef_pos[2]:.3f}), "
+                  f"Pixel=({u:.1f}, {v:.1f}), Visible={is_visible}")
+            debug_count += 1
         
         # 缩放到heatmap分辨率
         scale_x = heatmap_width / image_width
@@ -328,6 +347,15 @@ def process_lerobot_episode(
             "heatmap_v": heatmap_v,
             "is_visible": is_visible,
         })
+    
+    # 统计
+    visible_frames = sum(1 for r in results if r["is_visible"])
+    print(f"  Summary: {visible_frames}/{len(results)} frames visible")
+    if visible_frames == 0:
+        print(f"  Warning: No frames are visible! Check camera params and projection logic.")
+        print(f"  Sample EEF positions: {[r['eef_pos_3d'] for r in results[:3]]}")
+        print(f"  Camera intrinsic:\n{intrinsic}")
+        print(f"  Camera extrinsic:\n{extrinsic}")
     
     return results
 
@@ -626,9 +654,11 @@ def visualize_single_episode(
     # 使用torchvision保存视频（更可靠）
     try:
         import torchvision.io as io
-        # 转换回RGB并调整维度为 [T, C, H, W]
-        frames_tensor = torch.from_numpy(np.stack(frames_to_save))  # [T, H, W, 3]
-        frames_tensor = frames_tensor.permute(0, 3, 1, 2)  # [T, C, H, W]
+        # 转换回RGB并调整维度为 [T, H, W, C]
+        frames_array = np.stack(frames_to_save)  # [T, H, W, 3] BGR
+        # BGR -> RGB
+        frames_rgb = frames_array[..., ::-1].copy()
+        frames_tensor = torch.from_numpy(frames_rgb)  # [T, H, W, 3]
         
         # 使用torchvision保存
         io.write_video(output_path, frames_tensor, fps, video_codec='libx264')
