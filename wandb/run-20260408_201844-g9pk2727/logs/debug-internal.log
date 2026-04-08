@@ -39,3 +39,7 @@
 {"time":"2026-04-08T20:22:34.245158314+08:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
 {"time":"2026-04-08T20:22:48.727318117+08:00","level":"INFO","msg":"filestream: sending request","total_files":1,"events_offset":30,"events_lines":2}
 {"time":"2026-04-08T20:22:49.166247526+08:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-04-08T20:23:03.727302954+08:00","level":"INFO","msg":"filestream: sending request","total_files":1,"events_offset":32,"events_lines":2}
+{"time":"2026-04-08T20:23:04.096183818+08:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-04-08T20:23:18.726597169+08:00","level":"INFO","msg":"filestream: sending request","total_files":1,"events_offset":34,"events_lines":2}
+{"time":"2026-04-08T20:23:19.091633777+08:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
