@@ -663,22 +663,19 @@ def visualize_single_episode(
             # Resize heatmap to match video size
             heatmap_resized = cv2.resize(heatmap, (video_width, video_height))
             
-            # 转换为colormap (0-255)
-            heatmap_colored = cv2.applyColorMap((heatmap_resized * 255).astype(np.uint8), colormap)
+            # 转换为colormap (0-255)，applyColorMap返回BGR格式
+            heatmap_colored_bgr = cv2.applyColorMap((heatmap_resized * 255).astype(np.uint8), colormap)
             
-            # 叠加到原视频 (heatmap_colored是BGR格式)
-            frame_with_heatmap = (frame_rgb * (1 - alpha) + heatmap_colored * alpha).astype(np.uint8)
+            # 在BGR空间进行混合（frame_bgr是BGR格式）
+            frame_with_heatmap_bgr = (frame_bgr * (1 - alpha) + heatmap_colored_bgr * alpha).astype(np.uint8)
             
-            # 添加文字信息 (OpenCV在RGB图像上绘制)
+            # 添加文字信息 (OpenCV在BGR图像上绘制)
             info_text = f"EEF: ({proj['eef_pos_3d'][0]:.3f}, {proj['eef_pos_3d'][1]:.3f}, {proj['eef_pos_3d'][2]:.3f})"
-            cv2.putText(frame_with_heatmap, info_text, (10, 30), 
+            cv2.putText(frame_with_heatmap_bgr, info_text, (10, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             pixel_text = f"Pixel: ({proj['pixel_u']:.1f}, {proj['pixel_v']:.1f})"
-            cv2.putText(frame_with_heatmap, pixel_text, (10, 60),
+            cv2.putText(frame_with_heatmap_bgr, pixel_text, (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            # 转回BGR用于输出
-            frame_with_heatmap_bgr = cv2.cvtColor(frame_with_heatmap, cv2.COLOR_RGB2BGR)
         else:
             # EEF不在视野内
             cv2.putText(frame_bgr, "EEF NOT VISIBLE", (10, 30),
