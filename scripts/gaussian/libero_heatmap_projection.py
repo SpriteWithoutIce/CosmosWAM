@@ -218,14 +218,9 @@ def project_world_to_pixel(
     if verbose:
         print(f"    Before any transform: u={u:.1f}, v={v:.1f}")
     
-    # 注意：从调试来看，原始的v坐标是正确的（v=60在图像上方）
-    # 不需要额外的flip，因为LeRobot数据加载时已经处理了坐标系
-    # 如果需要flip，应该是：
-    # u = image_width - 1 - u  # 水平翻转
-    # v = image_height - 1 - v  # 垂直翻转
-    
-    # 目前测试：不进行任何flip
-    # 如果heatmap位置还是反的，再调整这里
+    # 修复：左右是反的，需要进行水平翻转
+    u = image_width - 1 - u  # 水平翻转
+    # v 不需要翻转，已经正确
     
     # 可见性判断：在图像范围内
     is_in_image = (0 <= u < image_width) and (0 <= v < image_height)
