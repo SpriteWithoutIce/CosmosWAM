@@ -39,6 +39,8 @@ def set_global_seed(seed: int, get_worker_init_fn: bool = False):
 
 class CosmosWAMTrainer:
     def __init__(self, model, train_dataset, val_dataset=None, *, cfg: DictConfig):
+        self.data_cfg = cfg.data
+        cfg = cfg.trainer
         self.model = model
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
@@ -160,13 +162,20 @@ class CosmosWAMTrainer:
         self.use_wandb = HAS_WANDB and cfg.get("wandb", {}).get("enabled", False)
         if self.use_wandb and self.accelerator.is_main_process:
             wandb_config = cfg.get("wandb", {})
+            
+            # Generate run name if not specified or set to "auto"
+            run_name = wandb_config.get("name", None)
+            if run_name is None or run_name == "auto":
+                run_name = self._generate_wandb_run_name(cfg)
+            
             wandb.init(
                 project=wandb_config.get("project", "cosmos-wam"),
-                name=wandb_config.get("name", None),
+                name=run_name,
                 config=OmegaConf.to_container(cfg, resolve=True),
                 dir=self.output_dir,
             )
-            logger.info("Wandb initialized: project=%s", wandb_config.get("project", "cosmos-wam"))
+            logger.info("Wandb initialized: project=%s, run_name=%s", 
+                       wandb_config.get("project", "cosmos-wam"), run_name)
 
     def _build_loader(self, dataset, worker_init_fn=None):
         sampler = ResumableEpochSampler(
@@ -186,6 +195,38 @@ class CosmosWAMTrainer:
             drop_last=True,
         )
 
+    def _generate_wandb_run_name(self, cfg: DictConfig) -> str:
+        """Generate a descriptive wandb run name based on config."""
+        from datetime import datetime
+        
+        # Extract dataset info from data config
+        data_cfg = self.data_cfg.get("train", {})
+        dataset_dirs = data_cfg.get("dataset_dirs", [])
+        if dataset_dirs:
+            # Extract dataset name from path (e.g., "libero_spatial" from ".../libero_spatial_no_noops_lerobot")
+            dataset_names = []
+            for d in dataset_dirs:
+                ds_name = d.split("/")[-1].replace("_no_noops_lerobot", "").replace("_lerobot", "")
+                dataset_names.append(ds_name)
+            dataset_info = "+".join(dataset_names) if len(dataset_names) <= 2 else f"{len(dataset_names)}suites"
+        else:
+            dataset_info = "unknown"
+        
+        # Get num_cameras from data config
+        processor = data_cfg.get("processor", {})
+        num_cameras = processor.num_output_cameras
+
+        # Get batch size
+        batch_size = cfg.get("batch_size", cfg.get("trainer", {}).get("batch_size", "?"))
+        
+        # Timestamp
+        timestamp = datetime.now().strftime("%m%d_%H%M")
+        
+        # Format: {dataset}_f{frames}_b{batch}_{timestamp}
+        # e.g., "libero_f2_b16_0403_1430"
+        run_name = f"{dataset_info}_f{num_cameras}_b{batch_size}_{timestamp}"
+        return run_name
+    
     def _estimate_total_steps(self):
         steps_per_epoch = len(self.train_loader) // self.gradient_accumulation_steps
         total = steps_per_epoch * self.num_epochs

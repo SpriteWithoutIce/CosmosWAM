@@ -42,6 +42,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         max_padding_retry: int = 3,
         concat_multi_camera: str = "horizontal", # "horizontal", "vertical", "robotwin", or None
         override_instruction: Optional[str] = None, # whether to hardcode a specific instruction for all samples, for debugging
+        use_text_prompt_template: bool = True, # whether to use DEFAULT_PROMPT template for text embedding hash
     ):
         self.lerobot_dataset = BaseLerobotDataset(
             dataset_dirs=dataset_dirs,
@@ -72,6 +73,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         self.max_padding_retry = max_padding_retry
         self.concat_multi_camera = concat_multi_camera
         self.override_instruction = override_instruction
+        self.use_text_prompt_template = use_text_prompt_template
 
         self.resize_transform = ResizeSmallestSideAspectPreserving(
             args={"img_w": self.video_size[1], "img_h": self.video_size[0]},
@@ -225,9 +227,17 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         # FIXME
         if self.override_instruction is not None:
             task = self.override_instruction
-        instruction = DEFAULT_PROMPT.format(task=task)
+        
+        # Use prompt template or raw task for hash lookup
+        if self.use_text_prompt_template:
+            instruction = DEFAULT_PROMPT.format(task=task)
+            hash_key = instruction
+        else:
+            # Use raw task description for hash (e.g., LIBERO)
+            hash_key = task
+            instruction = DEFAULT_PROMPT.format(task=task)  # Still use template for prompt field
 
-        context, context_mask = self._get_cached_text_context(instruction)
+        context, context_mask = self._get_cached_text_context(hash_key)
         # NOTE: to keep consistent with wan2.2's behavior
         context[~context_mask] = 0.0
         context_mask = torch.ones_like(context_mask)
@@ -267,7 +277,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
                 cache_path = found_path
             else:
                 raise FileNotFoundError(
-                    f"Missing text embedding cache: {cache_filename} in {cache_dir} or its subdirectories. "
+                    f"Missing text embedding cache: {cache_filename} in {cache_dir} or its subdirectories. Prompt is: {prompt}"
                     "Run scripts/precompute_text_embeds.py first."
                 )
         payload = torch.load(cache_path, map_location="cpu")
