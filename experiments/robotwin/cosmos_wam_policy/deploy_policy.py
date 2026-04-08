@@ -328,6 +328,13 @@ class CosmosWAMRobotWinPolicy:
             state_dict = ckpt["model"]
         else:
             state_dict = ckpt
+            print(f"[DEBUG] Checkpoint is state_dict with {len(state_dict)} keys", flush=True)
+        
+        # Check action_head weights specifically
+        action_head_keys = [k for k in state_dict.keys() if 'action_head' in k and 'weight' in k]
+        if action_head_keys:
+            for k in action_head_keys[:3]:
+                v = state_dict[k]
         
         # Load state dict (filtering out VAE if present, since we have our own)
         filtered_state = {k: v for k, v in state_dict.items() if not k.startswith("vae.")}
@@ -372,6 +379,7 @@ class CosmosWAMRobotWinPolicy:
         action_key = action_meta[0]["key"]
         normalizer = self.processor.normalizer.normalizers["action"][action_key]
         denorm = normalizer.backward(action.to(dtype=torch.float32, device="cpu"))
+        
         return denorm.numpy()
     
     def _build_image_tensor(self, observation: Dict[str, Any]) -> torch.Tensor:
@@ -462,11 +470,8 @@ class CosmosWAMRobotWinPolicy:
                 action_horizon=self.action_horizon,
                 context=context,
                 num_inference_steps=self.num_inference_steps,
-            )
-        
-        # Denormalize
-        action_chunk = self._denormalize_action(action)[0]  # [T, D]
-        
+            )    
+        action_chunk = self._denormalize_action(action)[0]  # [T, D]      
         return action_chunk
     
     def _fill_action_queue(self, observation: Dict[str, Any], instruction: str) -> None:
