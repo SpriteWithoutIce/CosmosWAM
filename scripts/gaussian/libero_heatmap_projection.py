@@ -216,20 +216,23 @@ def project_world_to_pixel(
     v = fy * y_norm + cy  # 行
     
     if verbose:
-        print(f"    Before flip: u={u:.1f}, v={v:.1f}")
+        print(f"    Before any transform: u={u:.1f}, v={v:.1f}")
     
-    # robosuite在渲染后做了 [::-1, ::-1] 翻转（见libero_utils.py）
-    # 这意味着图像上下左右都翻转了
-    u = image_width - 1 - u
-    v = image_height - 1 - v
+    # 注意：从调试来看，原始的v坐标是正确的（v=60在图像上方）
+    # 不需要额外的flip，因为LeRobot数据加载时已经处理了坐标系
+    # 如果需要flip，应该是：
+    # u = image_width - 1 - u  # 水平翻转
+    # v = image_height - 1 - v  # 垂直翻转
     
-    # 可见性判断：暂时只检查是否在图像范围内（用于调试）
+    # 目前测试：不进行任何flip
+    # 如果heatmap位置还是反的，再调整这里
+    
+    # 可见性判断：在图像范围内
     is_in_image = (0 <= u < image_width) and (0 <= v < image_height)
-    # 强制显示所有在图像范围内的点（忽略in_front检查）
-    is_visible = is_in_image  # DEBUG: 临时禁用 in_front 检查
+    is_visible = is_in_image
     
     if verbose:
-        print(f"    After flip: u={u:.1f}, v={v:.1f}, in_image={is_in_image}, in_front={is_in_front}, visible={is_visible}")
+        print(f"    After transform: u={u:.1f}, v={v:.1f}, in_image={is_in_image}, visible={is_visible}")
     
     return float(u), float(v), is_visible
 
