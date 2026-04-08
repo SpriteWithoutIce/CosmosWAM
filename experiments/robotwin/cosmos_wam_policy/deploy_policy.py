@@ -363,9 +363,22 @@ class CosmosWAMRobotWinPolicy:
         obs_data = observation["observation"]
         head_image = obs_data["head_camera"]["rgb"]  # [H, W, 3] numpy array
         
+        # Handle different input ranges
+        # RoboTwin may return float [0, 1] or uint8 [0, 255]
+        if head_image.dtype == np.float32 or head_image.dtype == np.float64:
+            if head_image.max() <= 1.0:
+                # Already in [0, 1], convert to uint8
+                head_image = (head_image * 255).astype(np.uint8)
+            else:
+                # Assume in [0, 255] but stored as float
+                head_image = head_image.astype(np.uint8)
+        else:
+            # uint8 or other integer type
+            head_image = head_image.astype(np.uint8)
+        
         # Convert to PIL then tensor [0, 255] -> [0, 1]
         from PIL import Image
-        pil_image = Image.fromarray(head_image.astype(np.uint8), mode="RGB")
+        pil_image = Image.fromarray(head_image, mode="RGB")
         image_tensor = T.ToTensor()(pil_image)  # [3, H, W]
         
         # Apply same transforms as training: resize -> crop -> normalize
