@@ -306,8 +306,22 @@ class CosmosWAMRobotWinPolicy:
         
         if isinstance(ckpt, dict) and "model" in ckpt:
             state_dict = ckpt["model"]
+            logger.info(f"Checkpoint has 'model' key with {len(state_dict)} keys")
+            # Check if checkpoint has training info
+            if "step" in ckpt:
+                logger.info(f"Checkpoint step: {ckpt['step']}")
+            if "epoch" in ckpt:
+                logger.info(f"Checkpoint epoch: {ckpt['epoch']}")
         else:
             state_dict = ckpt
+            logger.info(f"Checkpoint is state_dict with {len(state_dict)} keys")
+        
+        # Check a few weight statistics to verify it's not random
+        sample_keys = [k for k in state_dict.keys() if 'weight' in k and 'norm' not in k and 'emb' not in k][:3]
+        for k in sample_keys:
+            v = state_dict[k]
+            logger.info(f"Sample weight '{k}': shape={tuple(v.shape)}, "
+                       f"mean={v.float().mean().item():.4f}, std={v.float().std().item():.4f}")
         
         # Load state dict (filtering out VAE if present, since we have our own)
         filtered_state = {k: v for k, v in state_dict.items() if not k.startswith("vae.")}
@@ -320,9 +334,9 @@ class CosmosWAMRobotWinPolicy:
         missing, unexpected = self.model.load_state_dict(filtered_state, strict=False)
         
         if missing:
-            logger.warning(f"Missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")
+            logger.warning(f"Missing keys ({len(missing)}): {missing[:5]}{'...' if len(missing) > 5 else ''}")
         if unexpected:
-            logger.warning(f"Unexpected keys: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+            logger.warning(f"Unexpected keys ({len(unexpected)}): {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
         
         logger.info(f"Loaded checkpoint with {len(filtered_state)} keys")
     
@@ -458,17 +472,11 @@ class CosmosWAMRobotWinPolicy:
             )
         
         # Denormalize
-        # Clip to normalized range before denormalization
-        # action = torch.clamp(action, min=-5.0, max=5.0)  # Match training clip range
-        print(action[0])
+        action = torch.clamp(action, min=-5.0, max=5.0)
         action_chunk = self._denormalize_action(action)[0]  # [T, D]
-        print(action_chunk[0])
-        # Post-process gripper: RoboTwin uses 16-dim action with gripper at dim 7 and 15
-        # Convert from [0,1] (dataset format) to [-1,1] (environment format)
-        action_chunk[..., 7] = action_chunk[..., 7] * 2 - 1
-        action_chunk[..., 15] = action_chunk[..., 15] * 2 - 1
-
-        print(action_chunk[0])
+        
+        # DEBUG: Print final action
+        logger.info(f"Denorm action[0]: {action_chunk[0]}")
         
         return action_chunk
     
