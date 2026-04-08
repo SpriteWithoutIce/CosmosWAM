@@ -194,6 +194,9 @@ class CosmosWAM(nn.Module):
         for i in range(num_inference_steps):
             t = torch.full((B,), 1.0 - i / num_inference_steps, device=device, dtype=torch.float32)
             pred = self.action_head(action, video_cond_cache, t)
+            # DEBUG: Print pred stats
+            if i == 0:
+                print(f"[COSMOS_WAM] Step 0 pred: mean={pred.mean().item():.4f}, std={pred.std().item():.4f}", flush=True)
             dt = -1.0 / num_inference_steps
             action = action + dt * pred
         
