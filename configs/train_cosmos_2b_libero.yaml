@@ -100,6 +100,7 @@ data:
           size: [224, 224]
     text_embedding_cache_dir: ./data/text_embeds_cache/libero
     context_len: 128
+    use_text_prompt_template: false  # LIBERO: hash raw task description only
 
   val:
     _target_: cosmos_wam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
@@ -117,6 +118,7 @@ data:
     processor: ${data.train.processor}
     text_embedding_cache_dir: ${data.train.text_embedding_cache_dir}
     context_len: ${data.train.context_len}
+    use_text_prompt_template: ${data.train.use_text_prompt_template}
 
 trainer:
   output_dir: ${output_dir}

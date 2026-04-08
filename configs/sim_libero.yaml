@@ -105,6 +105,7 @@ data:
           size: [224, 224]
     text_embedding_cache_dir: ./data/text_embeds_cache/libero
     context_len: 128
+    use_text_prompt_template: false  # LIBERO: hash raw task description only
 
 # Evaluation settings
 EVALUATION:

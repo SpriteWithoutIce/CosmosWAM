@@ -1,8 +1,12 @@
 """
 Precompute text embeddings for LIBERO evaluation tasks.
 
+Reads tasks from dataset meta/tasks.jsonl files and computes embeddings.
+Hash is computed ONLY on the task description (no prompt template).
+
 Usage:
     python scripts/precompute_libero_text_embeds.py \
+        --dataset_root /home/jwhe/linyihan/datasets/libero_mujoco3.3.2 \
         --model_path /path/to/Cosmos-Reason1-7B \
         --output_dir ./data/text_embeds_cache/libero \
         --context_len 128
@@ -10,24 +14,26 @@ Usage:
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 
 import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer, Qwen2_5_VLForConditionalGeneration
-from libero.libero import benchmark
 
 NUM_EMBEDDING_PADDING_TOKENS = 512
 FULL_CONCAT_DIM = 28 * 3584  # 100352
-CONTEXT_LEN = 128
-
-# Cosmos-WAM prompt template
-DEFAULT_PROMPT = "A video recorded from a robot's point of view executing the following instruction: {task}"
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Precompute text embeddings for LIBERO")
+    parser.add_argument(
+        "--dataset_root",
+        type=str,
+        default="/home/jwhe/linyihan/datasets/libero_mujoco3.3.2",
+        help="Root directory containing LIBERO suites (e.g., libero_10_no_noops_lerobot)",
+    )
     parser.add_argument(
         "--model_path",
         type=str,
@@ -53,6 +59,55 @@ def parse_args():
         help="Batch size for encoding",
     )
     return parser.parse_args()
+
+
+def collect_tasks_from_dataset(dataset_root: str) -> list[str]:
+    """Collect all unique task descriptions from LIBERO dataset meta files.
+    
+    Reads meta/tasks.jsonl from each suite and extracts the 'task' field.
+    """
+    dataset_root = Path(dataset_root)
+    all_tasks = []
+    
+    # LIBERO has 4 suites
+    suite_names = [
+        "libero_spatial_no_noops_lerobot",
+        "libero_object_no_noops_lerobot", 
+        "libero_goal_no_noops_lerobot",
+        "libero_10_no_noops_lerobot",
+    ]
+    
+    for suite_name in suite_names:
+        tasks_file = dataset_root / suite_name / "meta" / "tasks.jsonl"
+        if not tasks_file.exists():
+            print(f"Warning: {tasks_file} not found, skipping {suite_name}")
+            continue
+        
+        with open(tasks_file, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    task_desc = obj.get("task", "")
+                    if task_desc:
+                        all_tasks.append(task_desc)
+                except json.JSONDecodeError:
+                    print(f"Warning: Failed to parse JSON line in {tasks_file}")
+                    continue
+        
+        print(f"  Loaded {suite_name}: {len(all_tasks)} tasks so far")
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_tasks = []
+    for task in all_tasks:
+        if task not in seen:
+            seen.add(task)
+            unique_tasks.append(task)
+    
+    return unique_tasks
 
 
 @torch.no_grad()
@@ -125,19 +180,14 @@ def main():
     model.eval()
     pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
 
-    # Collect all tasks from LIBERO benchmarks
-    benchmark_dict = benchmark.get_benchmark_dict()
-    all_tasks = []
-    
-    for suite_name in ["libero_spatial", "libero_object", "libero_goal", "libero_10"]:
-        task_suite = benchmark_dict[suite_name]()
-        for task_id in range(len(task_suite)):
-            task = task_suite.get_task(task_id)
-            all_tasks.append(task.language)
-
-    # Remove duplicates
-    all_tasks = sorted(set(all_tasks))
+    # Collect tasks from dataset files
+    print(f"\nCollecting tasks from: {args.dataset_root}")
+    all_tasks = collect_tasks_from_dataset(args.dataset_root)
     print(f"Total unique tasks: {len(all_tasks)}")
+    
+    if len(all_tasks) == 0:
+        print("Error: No tasks found!")
+        return
 
     # Compute embeddings
     for i in tqdm(range(0, len(all_tasks), args.batch_size), desc="Encoding"):
@@ -145,9 +195,9 @@ def main():
         embeddings = compute_embeddings_batch(model, tokenizer, batch, pad_id, args.context_len)
 
         # Save each embedding
+        # NOTE: Hash is computed ONLY on the task description, NOT on any prompt template
         for task_text, emb in embeddings.items():
-            prompt = DEFAULT_PROMPT.format(task=task_text)
-            hashed = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            hashed = hashlib.sha256(task_text.encode("utf-8")).hexdigest()
             cache_path = output_dir / f"{hashed}.t5_len{args.context_len}.pt"
             
             emb = emb.squeeze(0)
@@ -158,6 +208,8 @@ def main():
                 "mask": mask,
                 "text": task_text,
             }, cache_path)
+            
+            tqdm.write(f"Saved: {task_text[:50]}... -> {cache_path.name}")
 
     print(f"\nDone! Saved {len(all_tasks)} embeddings to {output_dir}")
 

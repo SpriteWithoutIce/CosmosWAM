@@ -36,7 +36,6 @@ from experiments.libero.libero_utils import (
 )
 from cosmos_wam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from cosmos_wam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
-from cosmos_wam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
 from libero.libero import benchmark
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -163,6 +162,26 @@ def _obs_to_model_input(
     return x, proprio, imgs
 
 
+def _get_text_embedding_direct(task_text: str, cache_dir: Path, context_len: int = 128):
+    """Get text embedding using direct task text (no prompt template)."""
+    import hashlib
+    hashed = hashlib.sha256(task_text.encode("utf-8")).hexdigest()
+    cache_path = cache_dir / f"{hashed}.t5_len{context_len}.pt"
+    
+    if not cache_path.exists():
+        # Search recursively
+        for root, dirs, files in os.walk(cache_dir):
+            if f"{hashed}.t5_len{context_len}.pt" in files:
+                cache_path = Path(root) / f"{hashed}.t5_len{context_len}.pt"
+                break
+    
+    if not cache_path.exists():
+        raise FileNotFoundError(f"Missing text embedding cache for task: {task_text[:50]}... (hash: {hashed[:16]}...)")
+    
+    payload = torch.load(cache_path, map_location="cpu")
+    return payload["context"], payload["mask"].bool()
+
+
 def _predict_action_chunk(
     obs: dict,
     task_description: str,
@@ -176,17 +195,15 @@ def _predict_action_chunk(
 ) -> np.ndarray:
     """Predict action chunk from observation."""
     num_inference_steps = int(cfg.EVALUATION.get("num_inference_steps", 4))
-    prompt = DEFAULT_PROMPT.format(task=task_description)
 
     image, proprio, _ = _obs_to_model_input(
         obs, cfg=cfg, processor=processor, width=input_w, height=input_h,
         device=device, dtype=model.model_dtype if hasattr(model, 'model_dtype') else torch.float32
     )
 
-    # Build text context from cache
-    from experiments.robotwin.cosmos_wam_policy.deploy_policy import _get_text_embedding_cache
+    # Build text context from cache using task_description directly (no prompt template)
     cache_dir = Path(cfg.EVALUATION.text_embedding_cache_dir)
-    context, _ = _get_text_embedding_cache(prompt, cache_dir, cfg.EVALUATION.get("context_len", 128))
+    context, _ = _get_text_embedding_direct(task_description, cache_dir, cfg.EVALUATION.get("context_len", 128))
     context = context.unsqueeze(0).to(device=device)
 
     # Run inference
