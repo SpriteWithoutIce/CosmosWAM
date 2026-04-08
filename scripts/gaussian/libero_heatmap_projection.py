@@ -22,6 +22,14 @@ LIBERO End-Effector Heatmap Generation Pipeline
       --dataset_dir /path/to/libero_spatial_no_noops_lerobot \
       --camera_params camera_params.json \
       --output_dir /path/to/heatmap_output
+  
+  # Step 3 (可选): 单个视频验证 - 生成对比视频
+  python libero_heatmap_projection.py visualize_single \
+      --parquet_path /path/to/episode_000000.parquet \
+      --video_path /path/to/episode_000000.mp4 \
+      --camera_params camera_params.json \
+      --output visualization.mp4 \
+      --sigma 8.0 --alpha 0.5
 """
 
 import json
@@ -474,7 +482,151 @@ def test_projection_without_libero():
 
 
 # ============================================================================
-# Part 6: 完整的预处理脚本 - 为所有episode生成heatmap
+# Part 6: 单个视频验证 - 生成对比视频
+# ============================================================================
+
+def visualize_single_episode(
+    parquet_path: str,
+    video_path: str,
+    camera_params_path: str,
+    output_path: str,
+    heatmap_height: int = 224,
+    heatmap_width: int = 224,
+    sigma: float = 8.0,
+    alpha: float = 0.5,
+):
+    """
+    为单个episode生成heatmap可视化视频。
+    
+    输出: 一个MP4视频，左边是原视频，右边是heatmap叠加
+    
+    Args:
+        parquet_path: episode的parquet文件路径 (e.g., episode_000000.parquet)
+        video_path: 对应的视频文件路径 (e.g., episode_000000.mp4)
+        camera_params_path: 相机参数JSON文件路径
+        output_path: 输出视频路径 (e.g., output.mp4)
+        heatmap_height/width: heatmap分辨率
+        sigma: Gaussian标准差
+        alpha: heatmap叠加透明度
+    """
+    import cv2
+    from tqdm import tqdm
+    
+    # 加载相机参数
+    with open(camera_params_path, "r") as f:
+        params = json.load(f)
+    
+    intrinsic = np.array(params["intrinsic"])
+    extrinsic = np.array(params["extrinsic"])
+    render_h = params["image_height"]
+    render_w = params["image_width"]
+    
+    # 处理parquet获取投影
+    print(f"Processing parquet: {parquet_path}")
+    projections = process_lerobot_episode(
+        parquet_path,
+        intrinsic,
+        extrinsic,
+        render_h,
+        render_w,
+        heatmap_height,
+        heatmap_width,
+        sigma,
+    )
+    
+    # 打开视频
+    print(f"Opening video: {video_path}")
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video: {video_path}")
+    
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    print(f"Video: {video_width}x{video_height} @ {fps}fps, {total_frames} frames")
+    print(f"Projections: {len(projections)} frames")
+    
+    # 准备输出视频 (并排显示: 原视频 | heatmap)
+    output_width = video_width * 2
+    output_height = max(video_height, heatmap_height)
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (output_width, output_height))
+    
+    # 准备colormap
+    colormap = cv2.COLORMAP_JET
+    
+    frame_idx = 0
+    pbar = tqdm(total=min(total_frames, len(projections)), desc="Generating video")
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret or frame_idx >= len(projections):
+            break
+        
+        # BGR -> RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # 生成heatmap
+        proj = projections[frame_idx]
+        if proj["is_visible"]:
+            heatmap = generate_gaussian_heatmap(
+                proj["heatmap_u"],
+                proj["heatmap_v"],
+                heatmap_height,
+                heatmap_width,
+                sigma=sigma,
+            )
+            
+            # Resize heatmap to match video size
+            heatmap_resized = cv2.resize(heatmap, (video_width, video_height))
+            
+            # 转换为colormap (0-255)
+            heatmap_colored = cv2.applyColorMap((heatmap_resized * 255).astype(np.uint8), colormap)
+            heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
+            
+            # 叠加到原视频
+            frame_with_heatmap = (frame_rgb * (1 - alpha) + heatmap_colored * alpha).astype(np.uint8)
+            
+            # 添加文字信息
+            info_text = f"EEF: ({proj['eef_pos_3d'][0]:.3f}, {proj['eef_pos_3d'][1]:.3f}, {proj['eef_pos_3d'][2]:.3f})"
+            cv2.putText(frame_with_heatmap, info_text, (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            pixel_text = f"Pixel: ({proj['pixel_u']:.1f}, {proj['pixel_v']:.1f})"
+            cv2.putText(frame_with_heatmap, pixel_text, (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        else:
+            # EEF不在视野内
+            frame_with_heatmap = frame_rgb.copy()
+            cv2.putText(frame_with_heatmap, "EEF NOT VISIBLE", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+        
+        # 转换为BGR用于输出
+        frame_with_heatmap_bgr = cv2.cvtColor(frame_with_heatmap, cv2.COLOR_RGB2BGR)
+        
+        # 并排拼接
+        combined = np.concatenate([frame, frame_with_heatmap_bgr], axis=1)
+        out.write(combined)
+        
+        frame_idx += 1
+        pbar.update(1)
+    
+    pbar.close()
+    cap.release()
+    out.release()
+    
+    print(f"\nSaved visualization to: {output_path}")
+    print(f"Total frames processed: {frame_idx}")
+    
+    # 打印统计
+    visible_count = sum(1 for p in projections[:frame_idx] if p["is_visible"])
+    print(f"Visible frames: {visible_count}/{frame_idx} ({100*visible_count/frame_idx:.1f}%)")
+
+
+# ============================================================================
+# Part 7: 完整的预处理脚本 - 为所有episode生成heatmap
 # ============================================================================
 
 def precompute_all_heatmaps(
@@ -601,6 +753,26 @@ if __name__ == "__main__":
         help="Show integration plan for Cosmos-WAM"
     )
     
+    # Command: visualize_single (新增)
+    single_parser = subparsers.add_parser(
+        "visualize_single",
+        help="Generate heatmap visualization for a single episode (for verification)"
+    )
+    single_parser.add_argument("--parquet_path", required=True, 
+                               help="Path to episode parquet file (e.g., episode_000000.parquet)")
+    single_parser.add_argument("--video_path", required=True,
+                               help="Path to corresponding video file (e.g., episode_000000.mp4)")
+    single_parser.add_argument("--camera_params", required=True,
+                               help="Path to camera_params.json")
+    single_parser.add_argument("--output", required=True,
+                               help="Output video path (e.g., output.mp4)")
+    single_parser.add_argument("--heatmap_height", type=int, default=224)
+    single_parser.add_argument("--heatmap_width", type=int, default=224)
+    single_parser.add_argument("--sigma", type=float, default=8.0,
+                               help="Gaussian sigma for heatmap")
+    single_parser.add_argument("--alpha", type=float, default=0.5,
+                               help="Heatmap overlay transparency (0-1)")
+    
     args = parser.parse_args()
     
     if args.command == "extract_camera_params":
@@ -630,6 +802,18 @@ if __name__ == "__main__":
     
     elif args.command == "demo":
         demo_integration_with_cosmos_wam()
+    
+    elif args.command == "visualize_single":
+        visualize_single_episode(
+            parquet_path=args.parquet_path,
+            video_path=args.video_path,
+            camera_params_path=args.camera_params,
+            output_path=args.output,
+            heatmap_height=args.heatmap_height,
+            heatmap_width=args.heatmap_width,
+            sigma=args.sigma,
+            alpha=args.alpha,
+        )
     
     else:
         parser.print_help()
