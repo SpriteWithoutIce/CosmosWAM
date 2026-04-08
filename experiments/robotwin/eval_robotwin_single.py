@@ -258,6 +258,8 @@ def main(cfg: DictConfig):
         _append_override(overrides, "use_online_text_encoder", True)
         _append_override(overrides, "online_text_encoder_path", cfg.EVALUATION.get("online_text_encoder_path"))
         _append_override(overrides, "text_encoder_device", cfg.EVALUATION.get("text_encoder_device"))
+        # Also pass the device for the main model
+        _append_override(overrides, "device", cfg.EVALUATION.get("device"))
     
     cmd = [
         sys.executable,
@@ -270,8 +272,40 @@ def main(cfg: DictConfig):
     ]
     
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(cfg.gpu_id)
     env["PYTHONUNBUFFERED"] = "1"
+    
+    # Handle GPU visibility for online text encoder mode
+    if cfg.EVALUATION.get("use_online_text_encoder", False):
+        # When using online text encoder with dual GPUs, both GPUs need to be visible
+        # The devices are controlled via text_encoder_device and device parameters
+        text_enc_device = cfg.EVALUATION.get("text_encoder_device", "cuda:0")
+        model_device = cfg.EVALUATION.get("device", "cuda")
+        
+        # Extract GPU IDs from device strings
+        def extract_gpu_id(device_str):
+            if device_str.startswith("cuda:"):
+                return int(device_str.split(":")[1])
+            return 0
+        
+        text_enc_gpu = extract_gpu_id(text_enc_device)
+        
+        # If model device specifies a GPU, use both
+        if model_device.startswith("cuda:"):
+            model_gpu = extract_gpu_id(model_device)
+        else:
+            # Default to gpu_id if device is just "cuda"
+            model_gpu = cfg.gpu_id
+        
+        # Make both GPUs visible
+        visible_gpus = sorted(set([text_enc_gpu, model_gpu]))
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, visible_gpus))
+        
+        print(f"Online text encoder mode: Using GPUs {visible_gpus}")
+        print(f"  Text encoder on: cuda:{text_enc_gpu}")
+        print(f"  Main model on: cuda:{model_gpu}")
+    else:
+        # Normal mode: only one GPU visible
+        env["CUDA_VISIBLE_DEVICES"] = str(cfg.gpu_id)
     
     # Pass cosmos_predict2 path to subprocess
     cosmos_predict2_path = os.environ.get("COSMOS_PREDICT2_PATH", "/home/jwhe/linyihan/cosmos-predict2.5")

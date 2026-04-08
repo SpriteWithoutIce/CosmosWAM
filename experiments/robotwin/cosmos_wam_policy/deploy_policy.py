@@ -665,13 +665,19 @@ def get_model(usr_args: Dict[str, Any]):
     # Get device
     device = str(usr_args.get("device") or cfg.EVALUATION.get("device") or "cuda")
     
-    # If CUDA_VISIBLE_DEVICES is set, the subprocess can only see those GPUs
-    # So we should use cuda:0 (the first visible GPU), not the original ID
+    # Check if using online text encoder (dual GPU mode)
+    use_online_text_encoder = _parse_bool(usr_args.get("use_online_text_encoder", False))
+    
+    # If CUDA_VISIBLE_DEVICES is set, we need to remap device IDs
     cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if cuda_visible is not None and device.startswith("cuda"):
-        # Use cuda:0 since that's the only GPU visible in this subprocess
+    if cuda_visible is not None and device.startswith("cuda") and not use_online_text_encoder:
+        # Single GPU mode: use cuda:0 since that's the only GPU visible in this subprocess
         device = "cuda:0"
         logger.info(f"CUDA_VISIBLE_DEVICES={cuda_visible}, using cuda:0")
+    elif cuda_visible is not None and use_online_text_encoder:
+        # Dual GPU mode: CUDA_VISIBLE_DEVICES contains multiple GPUs
+        # The device IDs should already be correct (cuda:0, cuda:1, etc.)
+        logger.info(f"Dual GPU mode: CUDA_VISIBLE_DEVICES={cuda_visible}, using {device}")
     
     if device.startswith("cuda") and not torch.cuda.is_available():
         logger.warning("CUDA is unavailable; fallback device to cpu.")
@@ -713,6 +719,23 @@ def get_model(usr_args: Dict[str, Any]):
     text_encoder_device = usr_args.get("text_encoder_device")
     if _is_none_like(text_encoder_device):
         text_encoder_device = cfg.EVALUATION.get("text_encoder_device")
+    
+    # Remap device IDs based on CUDA_VISIBLE_DEVICES for dual GPU mode
+    if use_online_text_encoder and cuda_visible is not None:
+        visible_gpus = [int(x.strip()) for x in cuda_visible.split(",")]
+        
+        def remap_device(dev_str):
+            if dev_str is None or not dev_str.startswith("cuda:"):
+                return dev_str
+            gpu_id = int(dev_str.split(":")[1])
+            if gpu_id in visible_gpus:
+                new_id = visible_gpus.index(gpu_id)
+                return f"cuda:{new_id}"
+            return dev_str
+        
+        device = remap_device(device)
+        text_encoder_device = remap_device(text_encoder_device)
+        logger.info(f"Remapped devices: model={device}, text_encoder={text_encoder_device}")
     
     # Validate that at least one text embedding source is provided
     has_cache = not _is_none_like(text_embedding_cache_dir)
