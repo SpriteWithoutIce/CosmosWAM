@@ -351,7 +351,20 @@ class CosmosWAMRobotWinPolicy:
         
         action_key = action_meta[0]["key"]
         normalizer = self.processor.normalizer.normalizers["action"][action_key]
+        
+        # DEBUG: Print raw model output stats
+        logger.info(f"Raw action (before denorm): shape={action.shape}, "
+                   f"mean={action.mean().item():.4f}, std={action.std().item():.4f}, "
+                   f"min={action.min().item():.4f}, max={action.max().item():.4f}")
+        
         denorm = normalizer.backward(action.to(dtype=torch.float32, device="cpu"))
+        
+        # DEBUG: Print denormalized action stats
+        logger.info(f"Denorm action: shape={denorm.shape}, "
+                   f"mean={denorm.mean().item():.4f}, std={denorm.std().item():.4f}, "
+                   f"min={denorm.min().item():.4f}, max={denorm.max().item():.4f}")
+        logger.info(f"First action: {denorm[0, 0].numpy()}")
+        
         return denorm.numpy()
     
     def _build_image_tensor(self, observation: Dict[str, Any]) -> torch.Tensor:
@@ -445,7 +458,15 @@ class CosmosWAMRobotWinPolicy:
             )
         
         # Denormalize
+        # Clip to normalized range before denormalization
+        action = torch.clamp(action, min=-5.0, max=5.0)  # Match training clip range
         action_chunk = self._denormalize_action(action)[0]  # [T, D]
+        
+        # Post-process gripper: RoboTwin uses 16-dim action with gripper at dim 7 and 15
+        # Convert from [0,1] (dataset format) to [-1,1] (environment format)
+        action_chunk[..., 7] = action_chunk[..., 7] * 2 - 1
+        action_chunk[..., 15] = action_chunk[..., 15] * 2 - 1
+        
         return action_chunk
     
     def _fill_action_queue(self, observation: Dict[str, Any], instruction: str) -> None:
