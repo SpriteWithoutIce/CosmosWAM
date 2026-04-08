@@ -551,6 +551,12 @@ def get_model(usr_args: Dict[str, Any]):
     
     This function is called by RoboTwin's eval_policy.py.
     """
+    logger.info("=" * 80)
+    logger.info("GET_MODEL CALLED - Version check: 2025-04-03-004")
+    logger.info(f"usr_args keys: {list(usr_args.keys())}")
+    logger.info(f"Checkpoint: {usr_args.get('ckpt_setting')}")
+    logger.info("=" * 80)
+    
     # Compose config
     sim_cfg_path = usr_args.get("sim_cfg_path")
     sim_task = usr_args.get("sim_task")
