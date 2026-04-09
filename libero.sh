@@ -1,45 +1,39 @@
 #!/bin/bash
-# Cosmos-WAM LIBERO Evaluation Script
+# Cosmos-WAM LIBERO Evaluation Script (支持多 GPU 并行)
 
-# Configuration
+# 从命令行接收参数，默认值为 0
+GPU_ID=${1:-0}      # 第一个参数：GPU 编号 (0-3)
+TASK_ID=${2:-0}     # 第二个参数：Task ID (0-9)
+
+# 根据 GPU_ID 设置环境变量
+export CUDA_VISIBLE_DEVICES=$GPU_ID
+export MUJOCO_EGL_DEVICE_ID=0  # EGL 始终用 0（因为 CUDA_VISIBLE_DEVICES 只暴露一块 GPU）
+
+# 其他配置
 CKPT="/home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260408_125315/checkpoints/step_0004000.pt"
 DATASET_STATS="/home/jwhe/linyihan/CosmosWAM/datasets_stats/libero_spatial_dataset_stats.json"
-
-# LIBERO library path (can be overridden)
 export LIBERO_PATH="${LIBERO_PATH:-/home/jwhe/linyihan/LIBERO}"
 
-# Task suite and ID
-TASK_SUITE="libero_spatial"  # Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
-TASK_ID=0                    # 0-9 for most suites
-NUM_TRIALS=50                # Number of episodes per task
-
-# Evaluation settings
-NUM_INFERENCE_STEPS=4        # Diffusion sampling steps
-REPLAN_STEPS=5               # Execute this many actions before replanning
+# 固定配置
+TASK_SUITE="libero_spatial"
+NUM_TRIALS=5
+NUM_INFERENCE_STEPS=20
+REPLAN_STEPS=10
 ACTION_HORIZON=32
-GPU_ID=0
 
-# Text embedding settings
-# Option 1: Use precomputed cache (set USE_ONLINE_ENCODER=false and set CACHE_DIR)
-# Option 2: Use online encoder (set USE_ONLINE_ENCODER=false and set ENCODER_PATH)
-USE_ONLINE_ENCODER=true
-TEXT_EMBED_CACHE="/home/jwhe/linyihan/datasets/text_embeds_cache/libero"  # Not used when online encoder is enabled
-ONLINE_ENCODER_PATH="/home/jwhe/linyihan/CKPT/Cosmos-Reason1-7B"
-TEXT_ENCODER_DEVICE="cuda:0"
+# 文本编码器配置
+USE_ONLINE_ENCODER=false
+TEXT_EMBED_CACHE="/home/jwhe/linyihan/datasets/text_embeds_cache/libero"
+TEXT_ENCODER_DEVICE="cuda:0"  # 程序内部只有一块 GPU，所以是 cuda:0
 
 echo "=============================================="
 echo "Cosmos-WAM LIBERO Evaluation"
-echo "=============================================="
-echo "LIBERO Path: $LIBERO_PATH"
-echo "Task Suite: $TASK_SUITE"
+echo "GPU: $GPU_ID (Physical) -> cuda:0 (Internal)"
 echo "Task ID: $TASK_ID"
-echo "Num Trials: $NUM_TRIALS"
-echo "Checkpoint: $CKPT"
-echo "Text Encoder: $([ "$USE_ONLINE_ENCODER" = true ] && echo "Online ($ONLINE_ENCODER_PATH)" || echo "Cache ($TEXT_EMBED_CACHE)")"
+echo "Task Suite: $TASK_SUITE"
 echo "=============================================="
 
 if [ "$USE_ONLINE_ENCODER" = true ]; then
-    # Use online text encoder
     $(which python3) experiments/libero/eval_libero_single.py \
         ckpt="$CKPT" \
         EVALUATION.task_suite_name="$TASK_SUITE" \
@@ -49,13 +43,12 @@ if [ "$USE_ONLINE_ENCODER" = true ]; then
         EVALUATION.num_inference_steps=$NUM_INFERENCE_STEPS \
         EVALUATION.replan_steps=$REPLAN_STEPS \
         EVALUATION.action_horizon=$ACTION_HORIZON \
-        EVALUATION.gpu_id=$GPU_ID \
+        EVALUATION.gpu_id=0 \
         EVALUATION.use_online_text_encoder=true \
-        EVALUATION.online_text_encoder_path="$ONLINE_ENCODER_PATH" \
+        EVALUATION.online_text_encoder_path="/home/jwhe/linyihan/CKPT/Cosmos-Reason1-7B" \
         EVALUATION.text_encoder_device="$TEXT_ENCODER_DEVICE" \
         mixed_precision=bf16
 else
-    # Use precomputed text embedding cache
     $(which python3) experiments/libero/eval_libero_single.py \
         ckpt="$CKPT" \
         EVALUATION.task_suite_name="$TASK_SUITE" \
@@ -66,12 +59,12 @@ else
         EVALUATION.num_inference_steps=$NUM_INFERENCE_STEPS \
         EVALUATION.replan_steps=$REPLAN_STEPS \
         EVALUATION.action_horizon=$ACTION_HORIZON \
-        EVALUATION.gpu_id=$GPU_ID \
+        EVALUATION.gpu_id=0 \
         mixed_precision=bf16
 fi
 
 echo ""
 echo "=============================================="
-echo "Evaluation Complete!"
+echo "Task $TASK_ID on GPU $GPU_ID Complete!"
 echo "Results saved to: ./evaluate_results/libero/"
 echo "=============================================="

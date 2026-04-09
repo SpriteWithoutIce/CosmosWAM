@@ -12,7 +12,7 @@ model:
 
   dit_config:
     max_img_h: 224
-    max_img_w: 448       # 1 camera only (agentview)
+    max_img_w: 448
     max_frames: 128
     in_channels: 18
     out_channels: 16
@@ -36,7 +36,7 @@ model:
     use_t_embedding_adaln_lora: true
 
   action_head:
-    action_dim: 7          # LIBERO: 7维 (eef_pose 6 + gripper 1)
+    action_dim: 7
     hidden_dim: 1024
     num_layers: 14
     num_heads: 16
@@ -50,9 +50,9 @@ data:
     # LIBERO 4 suites
     dataset_dirs:
       - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot
-      # - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_object_no_noops_lerobot
-      # - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_goal_no_noops_lerobot
-      # - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_10_no_noops_lerobot
+      - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_object_no_noops_lerobot
+      - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_goal_no_noops_lerobot
+      - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_10_no_noops_lerobot
     shape_meta:
       images:
         - key: image          # Only agentview (main camera)
@@ -104,19 +104,19 @@ data:
     text_embedding_cache_dir: /home/jwhe/linyihan/datasets/text_embeds_cache/libero
     context_len: 128
     use_text_prompt_template: true
-    pretrained_norm_stats: /home/jwhe/linyihan/CosmosWAM/datasets_stats/libero_spatial_dataset_stats.json
+    # pretrained_norm_stats: /home/jwhe/linyihan/CosmosWAM/datasets_stats/libero_spatial_dataset_stats.json
 
 trainer:
   output_dir: ${output_dir}
-  learning_rate: 1.0e-4      # FastWAM LIBERO uses 1e-4
+  learning_rate: 1.0e-4
   action_learning_rate: 1.0e-4
-  weight_decay: 1.0e-2       # FastWAM uses 1e-2
-  batch_size: 32             # FastWAM LIBERO batch_size
+  weight_decay: 1.0e-2
+  batch_size: 32
   num_workers: 8
   num_epochs: 10
   max_steps: null
   log_every: 10
-  save_every: 2000
+  save_every: 5000
   eval_every: 200
   gradient_accumulation_steps: 1
   max_grad_norm: 1.0
