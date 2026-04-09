@@ -166,6 +166,9 @@ def _obs_to_model_input(
 
     return x, proprio, imgs
 
+DEFAULT_PROMPT = "A video recorded from a robot's point of view executing the following instruction: {task}"
+def format_prompt(task: str, template: str) -> str:
+    return template.format(task=task)
 
 class OnlineTextEncoder:
     """Online text encoder for LIBERO (lazy initialization)."""
@@ -265,7 +268,7 @@ def _get_text_embedding_direct(task_text: str, cache_dir: Path, context_len: int
     
     # Otherwise use cache
     import hashlib
-    hashed = hashlib.sha256(task_text.encode("utf-8")).hexdigest()
+    hashed = hashlib.sha256(format_prompt(task_text, DEFAULT_PROMPT).encode("utf-8")).hexdigest()
     cache_path = cache_dir / f"{hashed}.t5_len{context_len}.pt"
     
     if not cache_path.exists():
