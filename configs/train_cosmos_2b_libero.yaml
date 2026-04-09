@@ -122,7 +122,7 @@ trainer:
   max_grad_norm: 1.0
   seed: ${seed}
   resume: false
-  resume_from_checkpoint: null  # 设置 checkpoint 路径来恢复训练，如: /path/to/checkpoints/step_0001000.pt
+  resume_from_checkpoint: /home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260408_125315/checkpoints/step_0004000.pt
   mixed_precision: "no"
   
   lr_schedule: "constant"
