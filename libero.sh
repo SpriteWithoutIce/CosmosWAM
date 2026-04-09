@@ -40,7 +40,7 @@ echo "=============================================="
 
 if [ "$USE_ONLINE_ENCODER" = true ]; then
     # Use online text encoder
-    python experiments/libero/eval_libero_single.py \
+    $(which python3) experiments/libero/eval_libero_single.py \
         ckpt="$CKPT" \
         EVALUATION.task_suite_name="$TASK_SUITE" \
         EVALUATION.task_id=$TASK_ID \
@@ -56,7 +56,7 @@ if [ "$USE_ONLINE_ENCODER" = true ]; then
         mixed_precision=bf16
 else
     # Use precomputed text embedding cache
-    python experiments/libero/eval_libero_single.py \
+    $(which python3) experiments/libero/eval_libero_single.py \
         ckpt="$CKPT" \
         EVALUATION.task_suite_name="$TASK_SUITE" \
         EVALUATION.task_id=$TASK_ID \

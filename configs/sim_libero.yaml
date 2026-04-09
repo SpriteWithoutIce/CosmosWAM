@@ -162,3 +162,8 @@ EVALUATION:
   
   # Environment number (currently only 1 is supported)
   env_num: 1
+  
+  # Online text encoder settings (optional)
+  use_online_text_encoder: false
+  online_text_encoder_path: null
+  text_encoder_device: cuda:0
