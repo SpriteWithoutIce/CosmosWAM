@@ -23,8 +23,8 @@ GPU_ID=0
 # Option 1: Use precomputed cache (set USE_ONLINE_ENCODER=false and set CACHE_DIR)
 # Option 2: Use online encoder (set USE_ONLINE_ENCODER=true and set ENCODER_PATH)
 USE_ONLINE_ENCODER=true
-TEXT_EMBED_CACHE=""  # Not used when online encoder is enabled
-ONLINE_ENCODER_PATH="/mnt/data/linyihan/Cosmos-Reason1-7b"
+TEXT_EMBED_CACHE="/home/jwhe/linyihan/datasets/text_embeds_cache/libero"  # Not used when online encoder is enabled
+ONLINE_ENCODER_PATH="/home/jwhe/linyihan/CKPT/Cosmos-Reason1-7B"
 TEXT_ENCODER_DEVICE="cuda:0"
 
 echo "=============================================="
