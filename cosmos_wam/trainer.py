@@ -158,6 +158,11 @@ class CosmosWAMTrainer:
         )
         self.optimizer.zero_grad(set_to_none=True)
         
+        # Load checkpoint if resuming
+        resume_ckpt_path = cfg.get("resume_from_checkpoint", None)
+        if resume_ckpt_path and os.path.exists(resume_ckpt_path):
+            self._load_checkpoint(resume_ckpt_path)
+        
         # Initialize wandb if enabled (only on main process)
         self.use_wandb = HAS_WANDB and cfg.get("wandb", {}).get("enabled", False)
         if self.use_wandb and self.accelerator.is_main_process:
@@ -408,3 +413,25 @@ class CosmosWAMTrainer:
         size_mb = os.path.getsize(path) / (1024 * 1024)
         logger.info("Saved checkpoint to %s (%.1f MB) [epoch=%d, step=%d]", 
                     path, size_mb, self.epoch, self.global_step)
+    
+    def _load_checkpoint(self, ckpt_path: str):
+        """Load checkpoint to resume training."""
+        logger.info("Loading checkpoint from %s", ckpt_path)
+        
+        # Load on CPU first to avoid GPU memory issues
+        checkpoint = torch.load(ckpt_path, map_location="cpu")
+        
+        # Load model state
+        unwrapped = self.accelerator.unwrap_model(self.model)
+        missing, unexpected = unwrapped.load_state_dict(checkpoint["model"], strict=False)
+        
+        if missing:
+            logger.warning("Missing keys when loading checkpoint: %s", list(missing)[:10])
+        if unexpected:
+            logger.warning("Unexpected keys when loading checkpoint: %s", list(unexpected)[:10])
+        
+        # Restore training state
+        self.global_step = checkpoint.get("step", 0)
+        self.epoch = checkpoint.get("epoch", 0)
+        
+        logger.info("Resumed training from step %d, epoch %d", self.global_step, self.epoch)

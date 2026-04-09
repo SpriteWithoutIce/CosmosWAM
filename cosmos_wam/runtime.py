@@ -58,7 +58,12 @@ def run_training(cfg: DictConfig):
         adaln_lora_dim=cfg.model.dit_config.get("adaln_lora_dim", 256),
         use_t_embedding_adaln_lora=cfg.model.dit_config.get("use_t_embedding_adaln_lora", True),
     )
-    load_dit_from_checkpoint(dit, cfg.model.dit_checkpoint, strict=False)
+    # Load pre-trained DiT weights only if not resuming from a training checkpoint
+    resume_ckpt_path = cfg.trainer.get("resume_from_checkpoint", None)
+    if not resume_ckpt_path:
+        load_dit_from_checkpoint(dit, cfg.model.dit_checkpoint, strict=False)
+    else:
+        print(f"[runtime] Skipping pre-trained DiT loading, will resume from {resume_ckpt_path}")
 
     # Optional: enable gradient checkpointing
     if cfg.model.get("enable_gradient_checkpointing", True):

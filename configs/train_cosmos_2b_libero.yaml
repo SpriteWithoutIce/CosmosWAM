@@ -122,6 +122,7 @@ trainer:
   max_grad_norm: 1.0
   seed: ${seed}
   resume: false
+  resume_from_checkpoint: null  # 设置 checkpoint 路径来恢复训练，如: /path/to/checkpoints/step_0001000.pt
   mixed_precision: "no"
   
   lr_schedule: "constant"
