@@ -21,7 +21,7 @@ GPU_ID=0
 
 # Text embedding settings
 # Option 1: Use precomputed cache (set USE_ONLINE_ENCODER=false and set CACHE_DIR)
-# Option 2: Use online encoder (set USE_ONLINE_ENCODER=true and set ENCODER_PATH)
+# Option 2: Use online encoder (set USE_ONLINE_ENCODER=false and set ENCODER_PATH)
 USE_ONLINE_ENCODER=true
 TEXT_EMBED_CACHE="/home/jwhe/linyihan/datasets/text_embeds_cache/libero"  # Not used when online encoder is enabled
 ONLINE_ENCODER_PATH="/home/jwhe/linyihan/CKPT/Cosmos-Reason1-7B"

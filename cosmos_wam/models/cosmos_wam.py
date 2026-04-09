@@ -181,10 +181,12 @@ class CosmosWAM(nn.Module):
         dummy_latents = first_frame_latent
 
         # Run dit once to populate video features cache
+        # Ensure context matches model dtype
+        context_dtype = next(self.dit.parameters()).dtype
         _ = self.dit(
             x_B_C_T_H_W=dummy_latents,
             timesteps_B_T=torch.zeros(B, 1, device=device, dtype=latents.dtype),
-            crossattn_emb=context,
+            crossattn_emb=context.to(dtype=context_dtype),
             intermediate_feature_ids=list(range(self.dit.num_blocks)),
         )
         video_cond_cache = [self._video_features[14 + i].detach().clone() for i in range(self.action_head.num_layers)]
