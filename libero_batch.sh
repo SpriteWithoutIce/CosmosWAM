@@ -3,9 +3,12 @@
 # Evaluates multiple tasks in a suite
 
 # Configuration
-CKPT="/mnt/data/linyihan/ckpt/step_0014000_bf16.pt"
+CKPT="/home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260408_125315/checkpoints/step_0004000.pt"
 DATASET_STATS="./dataset_stats.json"
 TEXT_EMBED_CACHE="./data/text_embeds_cache/libero"
+
+# LIBERO library path (can be overridden via environment)
+export LIBERO_PATH="${LIBERO_PATH:-/home/jwhe/linyihan/LIBERO}"
 
 # Task suite
 TASK_SUITE="libero_spatial"  # Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
@@ -20,6 +23,7 @@ NUM_TASKS=10
 echo "=============================================="
 echo "Cosmos-WAM LIBERO Batch Evaluation"
 echo "=============================================="
+echo "LIBERO Path: $LIBERO_PATH"
 echo "Task Suite: $TASK_SUITE"
 echo "Num Tasks: $NUM_TASKS"
 echo "Num Trials per Task: $NUM_TRIALS"

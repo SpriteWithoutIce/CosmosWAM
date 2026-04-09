@@ -2,9 +2,12 @@
 # Cosmos-WAM LIBERO Evaluation Script
 
 # Configuration
-CKPT="/mnt/data/linyihan/ckpt/step_0014000_bf16.pt"
+CKPT="/home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260408_125315/checkpoints/step_0004000.pt"
 DATASET_STATS="./dataset_stats.json"
 TEXT_EMBED_CACHE="./data/text_embeds_cache/libero"
+
+# LIBERO library path (can be overridden)
+export LIBERO_PATH="${LIBERO_PATH:-/home/jwhe/linyihan/LIBERO}"
 
 # Task suite and ID
 TASK_SUITE="libero_spatial"  # Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
@@ -20,6 +23,7 @@ GPU_ID=0
 echo "=============================================="
 echo "Cosmos-WAM LIBERO Evaluation"
 echo "=============================================="
+echo "LIBERO Path: $LIBERO_PATH"
 echo "Task Suite: $TASK_SUITE"
 echo "Task ID: $TASK_ID"
 echo "Num Trials: $NUM_TRIALS"

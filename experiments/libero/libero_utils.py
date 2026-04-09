@@ -1,8 +1,15 @@
 """Utils for evaluating policies in LIBERO simulation environments."""
 
 import math
+import sys
 import time
 import pathlib
+
+# Add LIBERO to path (can be overridden via environment variable)
+import os
+LIBERO_PATH = os.environ.get("LIBERO_PATH", "/home/jwhe/linyihan/LIBERO")
+if LIBERO_PATH not in sys.path:
+    sys.path.insert(0, LIBERO_PATH)
 
 import imageio
 from PIL import Image, ImageDraw

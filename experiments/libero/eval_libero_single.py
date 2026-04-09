@@ -12,6 +12,11 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+# Add LIBERO to path before other imports
+LIBERO_PATH = os.environ.get("LIBERO_PATH", "/home/jwhe/linyihan/LIBERO")
+if LIBERO_PATH not in sys.path:
+    sys.path.insert(0, LIBERO_PATH)
+
 import hydra
 import numpy as np
 import torch
