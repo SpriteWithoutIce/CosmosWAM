@@ -167,8 +167,103 @@ def _obs_to_model_input(
     return x, proprio, imgs
 
 
-def _get_text_embedding_direct(task_text: str, cache_dir: Path, context_len: int = 128):
+class OnlineTextEncoder:
+    """Online text encoder for LIBERO (lazy initialization)."""
+    
+    NUM_EMBEDDING_PADDING_TOKENS = 128
+    FULL_CONCAT_DIM = 28 * 3584  # 100352
+    CONTEXT_LEN = 128
+    
+    def __init__(self, model_path: str, device: str = "cuda:0"):
+        self.device = device
+        self.model_path = model_path
+        self._model = None
+        self._tokenizer = None
+        
+    def _init_model(self):
+        """Lazy initialize model."""
+        if self._model is not None:
+            return
+        
+        print(f"[OnlineTextEncoder] Loading model from: {self.model_path}")
+        from transformers import AutoTokenizer, Qwen2_5_VLForConditionalGeneration
+        
+        self._tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+        self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            self.model_path,
+            torch_dtype=torch.bfloat16,
+            device_map=self.device,
+            trust_remote_code=True,
+        )
+        self._model.eval()
+        self._pad_id = self._tokenizer.pad_token_id or self._tokenizer.eos_token_id
+        print("[OnlineTextEncoder] Model loaded")
+    
+    @torch.no_grad()
+    def encode(self, task_text: str) -> torch.Tensor:
+        """Encode task text to embedding."""
+        self._init_model()
+        
+        conversations = [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "You are a helpful assistant who will provide prompts to an image generator.",
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": task_text}],
+            },
+        ]
+        
+        input_ids = self._tokenizer.apply_chat_template(
+            conversations,
+            tokenize=True,
+            add_generation_prompt=False,
+            return_tensors=None,
+        )
+        
+        # Pad or truncate
+        if len(input_ids) < self.NUM_EMBEDDING_PADDING_TOKENS:
+            input_ids = input_ids + [self._pad_id] * (self.NUM_EMBEDDING_PADDING_TOKENS - len(input_ids))
+        else:
+            input_ids = input_ids[:self.NUM_EMBEDDING_PADDING_TOKENS]
+        
+        input_ids_tensor = torch.LongTensor(input_ids).unsqueeze(0).to(self.device)
+        
+        outputs = self._model(
+            input_ids=input_ids_tensor,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        hidden_states = outputs.hidden_states
+        
+        # 28 layers mean-normalize and concat
+        normalized = []
+        for layer_idx in range(1, len(hidden_states)):
+            h = hidden_states[layer_idx].float()
+            h = (h - h.mean(dim=-1, keepdim=True)) / (h.std(dim=-1, keepdim=True) + 1e-8)
+            normalized.append(h)
+        
+        text_emb = torch.cat(normalized, dim=-1)  # (1, 128, 100352)
+        text_emb = text_emb.squeeze(0).to(torch.bfloat16)  # (128, 100352)
+        
+        return text_emb
+
+
+def _get_text_embedding_direct(task_text: str, cache_dir: Path, context_len: int = 128, online_encoder=None):
     """Get text embedding using direct task text (no prompt template)."""
+    # Use online encoder if available
+    if online_encoder is not None:
+        context = online_encoder.encode(task_text)
+        mask = torch.ones(context_len, dtype=torch.bool)
+        return context, mask
+    
+    # Otherwise use cache
     import hashlib
     hashed = hashlib.sha256(task_text.encode("utf-8")).hexdigest()
     cache_path = cache_dir / f"{hashed}.t5_len{context_len}.pt"
@@ -197,6 +292,7 @@ def _predict_action_chunk(
     input_w: int,
     input_h: int,
     device: str,
+    online_encoder: OnlineTextEncoder = None,
 ) -> np.ndarray:
     """Predict action chunk from observation."""
     num_inference_steps = int(cfg.EVALUATION.get("num_inference_steps", 4))
@@ -206,11 +302,20 @@ def _predict_action_chunk(
         device=device, dtype=model.model_dtype if hasattr(model, 'model_dtype') else torch.float32
     )
 
-    # Build text context from cache using task_description directly (no prompt template)
-    cache_dir = Path(cfg.EVALUATION.text_embedding_cache_dir)
-    context, _ = _get_text_embedding_direct(task_description, cache_dir, cfg.EVALUATION.get("context_len", 128))
+    # Build text context from cache or online encoder
+    cache_dir = Path(cfg.EVALUATION.text_embedding_cache_dir) if cfg.EVALUATION.get("text_embedding_cache_dir") else None
+    context, _ = _get_text_embedding_direct(
+        task_description, 
+        cache_dir, 
+        cfg.EVALUATION.get("context_len", 128),
+        online_encoder=online_encoder
+    )
     context = context.unsqueeze(0).to(device=device)
 
+    # Add time dimension: [B,C,H,W] -> [B,C,T,H,W] where T=1
+    if image.ndim == 4:
+        image = image.unsqueeze(2)  # Add T dimension
+    
     # Run inference
     with torch.no_grad():
         action = model.infer_action(
@@ -245,6 +350,7 @@ def run_single_episode(
     input_w: int,
     input_h: int,
     device: str,
+    online_encoder: OnlineTextEncoder = None,
 ) -> tuple[bool, list]:
     """Run a single episode."""
     max_steps = {
@@ -287,6 +393,7 @@ def run_single_episode(
                 input_w=input_w,
                 input_h=input_h,
                 device=device,
+                online_encoder=online_encoder,
             )
             pending_actions = action_chunk[:replan_steps].tolist()
             imgs = get_libero_image(obs)
@@ -317,6 +424,7 @@ def run_single_task(
     input_w: int,
     input_h: int,
     device: str,
+    online_encoder: OnlineTextEncoder = None,
 ) -> dict:
     """Run evaluation for a single task."""
     env, task_description = get_libero_env(task, LIBERO_ENV_RESOLUTION, cfg.get("seed"))
@@ -341,6 +449,7 @@ def run_single_task(
             input_w=input_w,
             input_h=input_h,
             device=device,
+            online_encoder=online_encoder,
         )
         
         if success:
@@ -483,6 +592,16 @@ def eval_single_process(cfg: DictConfig):
         "duration": 0,
     }
 
+    # Initialize online text encoder if enabled
+    online_encoder = None
+    if cfg.EVALUATION.get("use_online_text_encoder", False):
+        online_encoder_path = cfg.EVALUATION.get("online_text_encoder_path")
+        if online_encoder_path is None:
+            raise ValueError("online_text_encoder_path is required when use_online_text_encoder=True")
+        text_enc_device = cfg.EVALUATION.get("text_encoder_device", "cuda:0")
+        online_encoder = OnlineTextEncoder(online_encoder_path, device=text_enc_device)
+        logging.info(f"Using online text encoder on {text_enc_device}")
+    
     logging.info("Running LIBERO evaluation")
     task_results = run_single_task(
         task=task,
@@ -495,6 +614,7 @@ def eval_single_process(cfg: DictConfig):
         input_w=input_w,
         input_h=input_h,
         device=device,
+        online_encoder=online_encoder,
     )
     results.update(task_results)
 
