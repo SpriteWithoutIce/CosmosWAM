@@ -178,11 +178,16 @@ def run_single_task(
             })
             
             # Log to WandB
-            wandb_run.log({
-                f"{task_name}/cumulative_success_rate": rate,
-                f"{task_name}/success_count": suc,
-                f"{task_name}/episode": test_num,
-            }, step=test_num)
+            if wandb_run is not None:
+                try:
+                    wandb_run.log({
+                        f"{task_name}/cumulative_success_rate": rate,
+                        f"{task_name}/success_count": suc,
+                        f"{task_name}/episode": test_num,
+                    }, step=test_num)
+                    print(f"[WandB] Logged: {task_name} episode {test_num}, rate={rate:.1f}%")
+                except Exception as e:
+                    print(f"[WandB] Warning: Failed to log - {e}")
             
             final_success_rate = rate
             final_success_count = suc
@@ -190,9 +195,10 @@ def run_single_task(
     process.wait()
     
     # Log final summary
-    wandb_run.summary[f"{task_name}/final_success_rate"] = final_success_rate
-    wandb_run.summary[f"{task_name}/final_success_count"] = final_success_count
-    wandb_run.summary[f"{task_name}/total_episodes"] = args.num_episodes
+    if wandb_run is not None:
+        wandb_run.summary[f"{task_name}/final_success_rate"] = final_success_rate
+        wandb_run.summary[f"{task_name}/final_success_count"] = final_success_count
+        wandb_run.summary[f"{task_name}/total_episodes"] = args.num_episodes
     
     return {
         "task_name": task_name,
@@ -214,6 +220,7 @@ def main():
         entity=args.wandb_entity,
         name=run_name,
         tags=args.wandb_tags + ["robotwin", f"episodes_{args.num_episodes}"],
+        settings=wandb.Settings(start_method="thread"),
         config={
             "checkpoint": args.ckpt,
             "tasks": args.tasks,
@@ -226,7 +233,10 @@ def main():
         },
     )
     
-    print(f"WandB run: {wandb_run.url}")
+    if wandb_run is None:
+        print("Running without WandB logging")
+    else:
+        print(f"WandB run: {wandb_run.url}")
     print(f"Evaluating {len(args.tasks)} tasks, {args.num_episodes} episodes each\n")
     
     # Run all tasks
@@ -242,21 +252,25 @@ def main():
             
         except Exception as e:
             print(f"\n✗ Task {task_name} failed: {e}")
-            wandb_run.log({f"{task_name}/error": str(e)})
+            if wandb_run:
+                wandb_run.log({f"{task_name}/error": str(e)})
     
     # Compute overall statistics
     avg_success_rate = sum(r["success_rate"] for r in all_results) / len(all_results) if all_results else 0
     
-    wandb_run.summary["overall/average_success_rate"] = avg_success_rate
-    wandb_run.summary["overall/num_tasks"] = len(all_results)
+    if wandb_run is not None:
+        wandb_run.summary["overall/average_success_rate"] = avg_success_rate
+        wandb_run.summary["overall/num_tasks"] = len(all_results)
     
     print(f"\n{'='*80}")
     print(f"Evaluation Complete!")
     print(f"{'='*80}")
     print(f"Average success rate across {len(all_results)} tasks: {avg_success_rate:.1f}%")
-    print(f"\nWandB run URL: {wandb_run.url}")
-    
-    wandb.finish()
+    if wandb_run is not None:
+        print(f"\nWandB run URL: {wandb_run.url}")
+        wandb.finish()
+    else:
+        print("\n(WandB not available)")
 
 
 if __name__ == "__main__":

@@ -105,5 +105,7 @@ python experiments/robotwin/eval_robotwin_wandb.py \
 echo ""
 echo "=============================================="
 echo "Evaluation Complete!"
+echo "Syncing WandB data..."
+wandb sync 2>/dev/null || true
 echo "Check WandB dashboard for results."
-echo "=============================================="
+echo "==============================================
