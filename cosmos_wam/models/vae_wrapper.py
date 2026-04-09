@@ -38,7 +38,15 @@ class Wan2pt1VAEInterface(VideoTokenizerInterface, nn.Module):
                    are created on the correct GPU. If None, uses cuda:0.
         """
         super().__init__()
-        self._device = device if device is not None else torch.device("cuda:0")
+        # Ensure device has a specific index
+        if device is None:
+            self._device = torch.device("cuda:0")
+        elif isinstance(device, str) and device == "cuda":
+            self._device = torch.device("cuda:0")
+        elif isinstance(device, torch.device) and device.type == "cuda" and device.index is None:
+            self._device = torch.device("cuda:0")
+        else:
+            self._device = device
         
         # Import from local cosmos checkout
         from cosmos_predict2._src.predict2.tokenizers.wan2pt1 import (

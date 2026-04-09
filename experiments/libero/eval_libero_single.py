@@ -372,6 +372,10 @@ def eval_single_process(cfg: DictConfig):
 
     device = cfg.EVALUATION.get("device", "cuda" if torch.cuda.is_available() else "cpu")
     
+    # Ensure device has a specific index
+    if device == "cuda" or (isinstance(device, torch.device) and device.type == "cuda" and device.index is None):
+        device = "cuda:0"
+    
     # Import and build model
     from cosmos_wam.models.cosmos_wam import CosmosWAM
     from cosmos_wam.models.dit_wrapper import MiniTrainDIT
