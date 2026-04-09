@@ -2,9 +2,9 @@
 # Cosmos-WAM LIBERO Evaluation Script
 
 # Configuration
-CKPT="/mnt/data/linyihan/ckpt/step_0014000_bf16.pt"
-DATASET_STATS="./dataset_stats.json"
-TEXT_EMBED_CACHE="./data/text_embeds_cache/libero"
+CKPT="/home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260408_125315/checkpoints/step_0004000.pt"
+DATASET_STATS="/home/jwhe/linyihan/CosmosWAM/datasets_stats/libero_spatial_dataset_stats.json"
+TEXT_EMBED_CACHE="/home/jwhe/linyihan/datasets/text_embeds_cache/libero"
 
 # Task suite and ID
 TASK_SUITE="libero_spatial"  # Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
