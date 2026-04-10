@@ -113,7 +113,7 @@ trainer:
   weight_decay: 1.0e-2
   batch_size: 32
   num_workers: 8
-  num_epochs: 10
+  num_epochs: 9
   max_steps: null
   log_every: 10
   save_every: 5000
@@ -122,7 +122,7 @@ trainer:
   max_grad_norm: 1.0
   seed: ${seed}
   resume: false
-  resume_from_checkpoint: /home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260408_125315/checkpoints/step_0004000.pt
+  resume_from_checkpoint: /home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260409_132739/checkpoints/final.pt
   resume_reset_step: true       # true: 加载权重但从 step=0 开始计数；false: 恢复 step 和 epoch
   mixed_precision: "no"
   
