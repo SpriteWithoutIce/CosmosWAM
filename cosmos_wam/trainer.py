@@ -121,17 +121,22 @@ class CosmosWAMTrainer:
         logger.info("Dataset info: total_samples=%d, batch_size=%d, num_workers=%d", 
                     dataset_size, self.batch_size, self.num_workers)
         
+        # Calculate total steps based on dataset size and distributed setup
+        # steps_per_epoch = num_samples / (batch_size * num_processes * grad_accum)
+        effective_batch_size = self.batch_size * self.accelerator.num_processes * self.gradient_accumulation_steps
+        steps_per_epoch = dataset_size // effective_batch_size
+        
         # Calculate total steps
         if self.max_steps is None:
             # Train by epochs: calculate steps from epochs
-            steps_per_epoch = len(self.train_loader) // self.gradient_accumulation_steps
             total_steps = steps_per_epoch * self.num_epochs
-            logger.info("Training by epochs: %d epochs * %d steps/epoch = %d total steps", 
-                        self.num_epochs, steps_per_epoch, total_steps)
+            logger.info("Training by epochs: %d epochs * %d steps/epoch = %d total steps (effective_batch_size=%d)", 
+                        self.num_epochs, steps_per_epoch, total_steps, effective_batch_size)
         else:
             # Train by fixed steps
             total_steps = self.max_steps
-            logger.info("Training by steps: %d total steps", total_steps)
+            logger.info("Training by steps: %d total steps (effective_batch_size=%d)", 
+                        total_steps, effective_batch_size)
         
         self.max_steps = total_steps
         
@@ -153,15 +158,23 @@ class CosmosWAMTrainer:
         os.makedirs(os.path.join(self.output_dir, "checkpoints"), exist_ok=True)
         os.makedirs(os.path.join(self.output_dir, "eval"), exist_ok=True)
 
+        # Log dataloader length before prepare
+        len_before = len(self.train_loader)
+        
         self.model, self.optimizer, self.train_loader, self.scheduler = self.accelerator.prepare(
             self.model, self.optimizer, self.train_loader, self.scheduler
         )
         self.optimizer.zero_grad(set_to_none=True)
         
+        # Log dataloader length after prepare
+        len_after = len(self.train_loader)
+        logger.info(f"DataLoader length: before_prepare={len_before}, after_prepare={len_after}")
+        
         # Load checkpoint if resuming
         resume_ckpt_path = cfg.get("resume_from_checkpoint", None)
+        resume_reset_step = cfg.get("resume_reset_step", True)  # 默认 True：从头开始计数
         if resume_ckpt_path and os.path.exists(resume_ckpt_path):
-            self._load_checkpoint(resume_ckpt_path)
+            self._load_checkpoint(resume_ckpt_path, reset_step=resume_reset_step)
         
         # Initialize wandb if enabled (only on main process)
         self.use_wandb = HAS_WANDB and cfg.get("wandb", {}).get("enabled", False)
@@ -282,7 +295,12 @@ class CosmosWAMTrainer:
         last_log_time = start_time
         
         while self.global_step < self.max_steps and self.epoch < self.num_epochs:
+            # Set epoch for sampler to ensure different shuffling each epoch
+            if hasattr(self.train_loader, 'sampler') and hasattr(self.train_loader.sampler, 'set_epoch'):
+                self.train_loader.sampler.set_epoch(self.epoch)
+            
             self.model.train()
+            epoch_steps = 0
             for batch in self.train_loader:
                 with self.accelerator.accumulate(self.model):
                     loss, loss_dict = self.model.training_loss(batch)
@@ -295,6 +313,7 @@ class CosmosWAMTrainer:
 
                 if self.accelerator.sync_gradients:
                     self.global_step += 1
+                    epoch_steps += 1
                     
                     # Update progress bar
                     if pbar is not None:
@@ -358,6 +377,7 @@ class CosmosWAMTrainer:
                     if self.global_step >= self.max_steps:
                         break
 
+            logger.info(f"Epoch {self.epoch} finished: epoch_steps={epoch_steps}, global_step={self.global_step}")
             self.epoch += 1
 
         if pbar is not None:
@@ -414,9 +434,15 @@ class CosmosWAMTrainer:
         logger.info("Saved checkpoint to %s (%.1f MB) [epoch=%d, step=%d]", 
                     path, size_mb, self.epoch, self.global_step)
     
-    def _load_checkpoint(self, ckpt_path: str):
-        """Load checkpoint to resume training."""
-        logger.info("Loading checkpoint from %s", ckpt_path)
+    def _load_checkpoint(self, ckpt_path: str, reset_step: bool = True):
+        """Load checkpoint to resume training.
+        
+        Args:
+            ckpt_path: Path to checkpoint file
+            reset_step: If True, start from step=0, epoch=0 (hot start).
+                       If False, restore step and epoch from checkpoint.
+        """
+        logger.info("Loading checkpoint from %s (reset_step=%s)", ckpt_path, reset_step)
         
         # Load on CPU first to avoid GPU memory issues
         checkpoint = torch.load(ckpt_path, map_location="cpu")
@@ -431,7 +457,13 @@ class CosmosWAMTrainer:
             logger.warning("Unexpected keys when loading checkpoint: %s", list(unexpected)[:10])
         
         # Restore training state
-        self.global_step = checkpoint.get("step", 0)
-        self.epoch = checkpoint.get("epoch", 0)
-        
-        logger.info("Resumed training from step %d, epoch %d", self.global_step, self.epoch)
+        if reset_step:
+            # Hot start: load weights only, start from step=0, epoch=0
+            self.global_step = 0
+            self.epoch = 0
+            logger.info("Hot start: loaded model weights, starting from step=0, epoch=0")
+        else:
+            # Full resume: restore step and epoch
+            self.global_step = checkpoint.get("step", 0)
+            self.epoch = checkpoint.get("epoch", 0)
+            logger.info("Resumed training from step %d, epoch %d", self.global_step, self.epoch)

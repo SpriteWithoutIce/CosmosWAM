@@ -123,6 +123,7 @@ trainer:
   seed: ${seed}
   resume: false
   resume_from_checkpoint: /home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260408_125315/checkpoints/step_0004000.pt
+  resume_reset_step: true       # true: 加载权重但从 step=0 开始计数；false: 恢复 step 和 epoch
   mixed_precision: "no"
   
   lr_schedule: "constant"
