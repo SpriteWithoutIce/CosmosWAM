@@ -158,6 +158,13 @@ class CosmosWAMTrainer:
         os.makedirs(os.path.join(self.output_dir, "checkpoints"), exist_ok=True)
         os.makedirs(os.path.join(self.output_dir, "eval"), exist_ok=True)
 
+        # Load checkpoint BEFORE prepare() - this is important for distributed training
+        # Loading weights before accelerator.prepare() ensures they are properly propagated
+        resume_ckpt_path = cfg.get("resume_from_checkpoint", None)
+        resume_reset_step = cfg.get("resume_reset_step", True)  # 默认 True：从头开始计数
+        if resume_ckpt_path and os.path.exists(resume_ckpt_path):
+            self._load_checkpoint(resume_ckpt_path, reset_step=resume_reset_step)
+
         # Log dataloader length before prepare
         len_before = len(self.train_loader)
         
@@ -169,12 +176,6 @@ class CosmosWAMTrainer:
         # Log dataloader length after prepare
         len_after = len(self.train_loader)
         logger.info(f"DataLoader length: before_prepare={len_before}, after_prepare={len_after}")
-        
-        # Load checkpoint if resuming
-        resume_ckpt_path = cfg.get("resume_from_checkpoint", None)
-        resume_reset_step = cfg.get("resume_reset_step", True)  # 默认 True：从头开始计数
-        if resume_ckpt_path and os.path.exists(resume_ckpt_path):
-            self._load_checkpoint(resume_ckpt_path, reset_step=resume_reset_step)
         
         # Initialize wandb if enabled (only on main process)
         self.use_wandb = HAS_WANDB and cfg.get("wandb", {}).get("enabled", False)
@@ -447,10 +448,28 @@ class CosmosWAMTrainer:
         # Load on CPU first to avoid GPU memory issues
         checkpoint = torch.load(ckpt_path, map_location="cpu")
         
-        # Load model state
-        unwrapped = self.accelerator.unwrap_model(self.model)
-        missing, unexpected = unwrapped.load_state_dict(checkpoint["model"], strict=False)
+        # Check checkpoint contents
+        ckpt_keys = set(checkpoint["model"].keys())
+        model_keys = set(self.model.state_dict().keys())
         
+        # Check overlap
+        overlapping = ckpt_keys & model_keys
+        missing_in_ckpt = model_keys - ckpt_keys
+        extra_in_ckpt = ckpt_keys - model_keys
+        
+        logger.info("Checkpoint analysis: ckpt_keys=%d, model_keys=%d, overlapping=%d", 
+                    len(ckpt_keys), len(model_keys), len(overlapping))
+        if len(overlapping) == 0:
+            logger.error("WARNING: No overlapping keys! Checkpoint may have different structure.")
+            logger.error("Checkpoint keys (first 10): %s", list(ckpt_keys)[:10])
+            logger.error("Model keys (first 10): %s", list(model_keys)[:10])
+        else:
+            logger.info("Sample overlapping keys: %s", list(overlapping)[:5])
+        
+        # Load model state directly (called before accelerator.prepare(), so model is not wrapped yet)
+        missing, unexpected = self.model.load_state_dict(checkpoint["model"], strict=False)
+        
+        logger.info("load_state_dict result: missing=%d, unexpected=%d", len(missing), len(unexpected))
         if missing:
             logger.warning("Missing keys when loading checkpoint: %s", list(missing)[:10])
         if unexpected:
