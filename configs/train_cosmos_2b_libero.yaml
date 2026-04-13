@@ -104,7 +104,7 @@ data:
     text_embedding_cache_dir: /home/jwhe/linyihan/datasets/text_embeds_cache/libero
     context_len: 128
     use_text_prompt_template: true
-    # pretrained_norm_stats: /home/jwhe/linyihan/CosmosWAM/datasets_stats/libero_spatial_dataset_stats.json
+    pretrained_norm_stats: /home/jwhe/linyihan/CosmosWAM/datasets_stats/libero_dataset_stats.json
 
 trainer:
   output_dir: ${output_dir}
@@ -126,7 +126,7 @@ trainer:
   resume_reset_step: true       # true: 加载权重但从 step=0 开始计数；false: 恢复 step 和 epoch
   mixed_precision: "no"
   
-  lr_schedule: "constant"
+  lr_schedule: "cosine"
   warmup_steps: 100
   
   wandb:
