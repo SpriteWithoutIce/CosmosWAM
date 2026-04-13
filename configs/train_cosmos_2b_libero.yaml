@@ -130,9 +130,9 @@ trainer:
   lr_schedule: "cosine"
   warmup_steps: 100
   
-  wandb:
+  swanlab:
     enabled: true
-    project: "cosmos-wam-robotwin"
+    project: "cosmos-wam"
     name: null
   
   deepspeed:

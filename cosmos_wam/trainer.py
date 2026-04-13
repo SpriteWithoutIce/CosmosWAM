@@ -9,13 +9,13 @@ from omegaconf import DictConfig, OmegaConf
 from .utils.samplers import ResumableEpochSampler
 from .utils.logging_config import get_logger
 
-# Optional wandb import
+# Optional swanlab import
 try:
-    import wandb
-    HAS_WANDB = True
+    import swanlab
+    HAS_SWANLAB = True
 except ImportError:
-    HAS_WANDB = False
-    wandb = None
+    HAS_SWANLAB = False
+    swanlab = None
 
 logger = get_logger(__name__)
 
@@ -177,24 +177,23 @@ class CosmosWAMTrainer:
         len_after = len(self.train_loader)
         logger.info(f"DataLoader length: before_prepare={len_before}, after_prepare={len_after}")
         
-        # Initialize wandb if enabled (only on main process)
-        self.use_wandb = HAS_WANDB and cfg.get("wandb", {}).get("enabled", False)
-        if self.use_wandb and self.accelerator.is_main_process:
-            wandb_config = cfg.get("wandb", {})
-            
+        # Initialize swanlab if enabled (only on main process)
+        swanlab_config = cfg.get("swanlab", {})
+        self.use_swanlab = HAS_SWANLAB and swanlab_config.get("enabled", False)
+        if self.use_swanlab and self.accelerator.is_main_process:
             # Generate run name if not specified or set to "auto"
-            run_name = wandb_config.get("name", None)
+            run_name = swanlab_config.get("name", None)
             if run_name is None or run_name == "auto":
-                run_name = self._generate_wandb_run_name(cfg)
+                run_name = self._generate_swanlab_run_name(cfg)
             
-            wandb.init(
-                project=wandb_config.get("project", "cosmos-wam"),
-                name=run_name,
+            swanlab.init(
+                project=swanlab_config.get("project", "cosmos-wam"),
+                experiment_name=run_name,
                 config=OmegaConf.to_container(cfg, resolve=True),
-                dir=self.output_dir,
+                logdir=self.output_dir,
             )
-            logger.info("Wandb initialized: project=%s, run_name=%s", 
-                       wandb_config.get("project", "cosmos-wam"), run_name)
+            logger.info("Swanlab initialized: project=%s, run_name=%s", 
+                       swanlab_config.get("project", "cosmos-wam"), run_name)
 
     def _build_loader(self, dataset, worker_init_fn=None):
         sampler = ResumableEpochSampler(
@@ -214,8 +213,8 @@ class CosmosWAMTrainer:
             drop_last=True,
         )
 
-    def _generate_wandb_run_name(self, cfg: DictConfig) -> str:
-        """Generate a descriptive wandb run name based on config."""
+    def _generate_swanlab_run_name(self, cfg: DictConfig) -> str:
+        """Generate a descriptive swanlab run name based on config."""
         from datetime import datetime
         
         # Extract dataset info from data config
@@ -360,12 +359,12 @@ class CosmosWAMTrainer:
                             samples_per_sec,
                         )
                         
-                        # Log to wandb
-                        if self.use_wandb:
-                            wandb.log({
-                                "train/loss_total": loss_dict["loss_total"],
-                                "train/loss_video": loss_dict["loss_video"],
-                                "train/loss_action": loss_dict["loss_action"],
+                        # Log to swanlab
+                        if self.use_swanlab:
+                            swanlab.log({
+                                "train/loss_total": loss_dict["loss_total"].item(),
+                                "train/loss_video": loss_dict["loss_video"].item(),
+                                "train/loss_action": loss_dict["loss_action"].item(),
                                 "train/learning_rate": lr,
                                 "train/steps_per_sec": steps_per_sec,
                                 "train/samples_per_sec": samples_per_sec,
@@ -389,10 +388,10 @@ class CosmosWAMTrainer:
         logger.info("Training finished. Total steps: %d, Total time: %s", 
                     self.global_step, self._format_time(total_time))
         
-        # Close wandb
-        if self.use_wandb and self.accelerator.is_main_process:
-            wandb.finish()
-            logger.info("Wandb run finished")
+        # Close swanlab
+        if self.use_swanlab and self.accelerator.is_main_process:
+            swanlab.finish()
+            logger.info("Swanlab run finished")
     
     def _format_time(self, seconds: float) -> str:
         """Format seconds to human readable string."""
