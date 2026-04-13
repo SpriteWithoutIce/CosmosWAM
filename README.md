@@ -1,51 +1,62 @@
 # Cosmos-WAM: 基于 Cosmos-Predict2.5 的世界动作模型
 
-使用 NVIDIA Cosmos-Predict2.5 作为基础模型，配合 14 层 Action Head 进行视频-动作联合训练。
+Cosmos-WAM 是一个**世界动作模型 (World Action Model)**，基于 NVIDIA Cosmos-Predict2.5-2B 构建，通过联合视频生成与动作预测进行端到端训练。模型能够同时学习“预测未来”与“控制机器人”两个任务，并在 LIBERO 与 RoboTwin 两大机器人学习 benchmark 上完成训练与评估。
 
-## 概述
+---
 
-本项目实现了**世界动作模型 (World Action Model, WAM)**，同时学习两个任务：
-1. **生成未来视频帧**（世界模型）- 使用 Cosmos 2B DiT
-2. **预测机器人动作** - 使用 14 层 Transformer，关注视频 DiT 的中间层特征
+## 架构概览
+
+<p align="center">
+  <img src="docs/va_02.png" alt="Cosmos-WAM Architecture" width="90%">
+</p>
+
+Cosmos-WAM 的核心架构包含两部分：
+
+1. **视频世界模型 (World Model)** — 以 Cosmos-Predict2.5-2B 的 28 层 DiT 为 backbone，通过 Rectified Flow 学习未来视频帧的生成。输入为 33 帧视频（经 VAE 编码为 3 个 latent），条件帧（通常为第 1 帧）保持干净，其余帧加入噪声进行流匹配训练。
+2. **动作专家 (Action Expert)** — 一个 14 层的 ActionDiT，通过 **Cross-Attention** 逐层接收 DiT 第 14–27 层的中间 KV 特征，预测长度为 32 的动作序列（action chunk）。Action Head 使用独立的 Rectified Flow timestep，与视频分支解耦。
 
 ### 主要特性
 
-- **基础模型**: Cosmos-Predict2.5-2B (Reason-1 7B 版本)
-- **动作头 (Action Head)**: 14 层 Transformer，带 AdaLN，cross-attention 到 DiT 第 14-27 层
-- **数据格式**: LeRobot 格式 (parquet + mp4)
-- **文本编码器**: Reason-1 7B (100352 维 embedding)
-- **训练方式**: 联合视频 + 动作流匹配训练，使用 DeepSpeed ZeRO-2
+- **基础模型**: Cosmos-Predict2.5-2B Posttrain
+- **文本编码器**: Reason-1 7B（embedding 维度 100,352）
+- **动作头**: 14 层 ActionDiT，带 AdaLN，逐层 cross-attention 到 DiT 第 14–27 层
+- **训练方式**: 联合视频 + 动作 Rectified Flow 训练
+- **数据格式**: [LeRobot](https://github.com/huggingface/lerobot) 格式（parquet + mp4）
+- **分布式训练**: 基于 Accelerate + DeepSpeed ZeRO-1/2
+- **评估支持**: LIBERO（单臂 7-DOF）与 RoboTwin（双臂 16-DOF）
 
 ---
 
 ## 安装
 
-### 1. 克隆并安装
+### 环境要求
+
+- Python >= 3.10
+- PyTorch >= 2.1.0
+- CUDA capable GPU（推荐 80GB 显存用于训练，24GB 可用于评估）
+
+### 安装步骤
 
 ```bash
-cd cosmos-wam
+# 1. 克隆仓库
+cd /path/to/CosmosWAM
+
+# 2. 安装 Cosmos-WAM
 pip install -e .
+
+# 3. 配置 Cosmos-Predict2.5 路径（根据你的实际路径）
+export PYTHONPATH=/path/to/cosmos-predict2.5:$PYTHONPATH
 ```
 
-### 2. Cosmos 依赖
-
-```bash
-export PYTHONPATH=/home/jwhe/linyihan/cosmos-predict2.5:$PYTHONPATH
-```
-
-### 3. 安装其他依赖
-
-```bash
-pip install torch torchvision accelerate deepspeed hydra-core omegaconf einops transformers
-```
+`pyproject.toml` 已声明核心依赖，包括 `torch`, `accelerate`, `deepspeed`, `hydra-core`, `omegaconf`, `transformers`, `wandb` 等。
 
 ---
 
 ## 数据准备
 
-### 1. 数据集格式: LeRobot
+### 数据集格式
 
-训练管道期望使用 **LeRobot 格式**。每个数据集的目录结构如下：
+训练与评估均使用 **LeRobot 格式**。一个典型的数据集目录结构如下：
 
 ```
 data/
@@ -59,7 +70,7 @@ data/
     │   ├── episodes.jsonl
     │   ├── info.json
     │   ├── stats.json
-    │   └── tasks.jsonl          # 任务描述文件
+    │   └── tasks.jsonl          # 任务语言描述
     └── videos/
         └── chunk-000/
             ├── observation.images.cam_high/
@@ -69,245 +80,220 @@ data/
                 └── ...
 ```
 
-#### 必需的文件
+**关键字段说明**:
 
-- **parquet 文件**: 存储 `observation.state`, `action`, `timestamp`, `task_index`
-- **videos/**: 每个相机、每个 episode 的 MP4 视频文件
-- **meta/tasks.jsonl**: 任务描述（用于生成文本 embedding）
-  ```jsonl
-  {"task": "pick up the black bowl"}
-  {"task": "place the cube on the plate"}
-  ```
+- `observation.state`: 机器人本体状态（proprioception）
+- `action`: 机器人动作
+- `task_index`: 对应 `meta/tasks.jsonl` 中的任务索引
 
-### 2. 转换数据到 LeRobot 格式
+### 预计算文本 Embedding
 
-如果你有原始的机器人演示数据，使用 LeRobot 库进行转换：
+Cosmos 2B Posttrain 使用 **Reason-1 7B** 文本编码器（非 T5），embedding 维度为 `[512, 100352]`。训练与评估前需预计算文本 embedding：
 
 ```bash
-# 安装 LeRobot
-pip install lerobot
+# LIBERO
+python scripts/precompute_libero_text_embeds.py \
+    --dataset_root /path/to/libero_datasets \
+    --model_path /path/to/Cosmos-Reason1-7B \
+    --output_dir ./data/text_embeds_cache/libero
 
-# 使用他们的转换脚本或编写自定义转换器
-# 参考: https://github.com/huggingface/lerobot
+# RoboTwin
+python scripts/precompute_robotwin_text_embeds.py \
+    --dataset_root /path/to/robotwin_datasets \
+    --model_path /path/to/Cosmos-Reason1-7B \
+    --output_dir ./data/text_embeds_cache/robotwin
 ```
 
-**parquet 文件中的关键字段**：
-- `observation.state`: 机器人本体感知（例如 8 维）
-- `action`: 机器人动作（例如 7 维：6D 位姿 + 夹爪）
-- `timestamp`: Episode 时间戳
-- `task_index`: 对应 tasks.jsonl 中的索引
+### 数据集统计信息
 
-### 3. 预计算文本 Embedding（Reason-1 7B）
+训练前需计算动作归一化统计信息：
 
-**⚠️ 重要**: Cosmos 2B Posttrain checkpoint 使用 **Reason-1 7B** 文本编码器，不是 T5！
-
-文本 embedding 的维度是 **[512, 100352]**。
-
-#### 设置
-
-你需要访问 Reason-1 7B 模型。请查看你的 checkpoint 发布说明获取确切的模型路径。
-
-#### 预计算脚本
-
-创建一个脚本（需要根据你的 checkpoint 进行调整）：
-
-```python
-# scripts/precompute_text_embeds.py
-import os
-import hashlib
-import torch
-import json
-from pathlib import Path
-
-# 从 cosmos_predict2 导入（根据你的 checkpoint 调整）
-from cosmos_predict2._src.predict2.text_encoders.text_encoder import TextEncoder
-
-# 初始化 Reason-1 7B 文本编码器
-text_encoder = TextEncoder(config, device="cuda")  # 根据 checkpoint 调整 config
-text_encoder.eval()
-
-CACHE_DIR = "./data/text_embeds_cache/libero_reason1"
-MAX_LEN = 512
-os.makedirs(CACHE_DIR, exist_ok=True)
-
-def encode_and_cache(task: str):
-    prompt = f"A video recorded from a robot's point of view executing the following instruction: {task}"
-    hashed = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    cache_path = os.path.join(CACHE_DIR, f"{hashed}.pt")
-    if os.path.exists(cache_path):
-        return
-    
-    with torch.no_grad():
-        # 编码（根据 checkpoint API 调整）
-        context, mask = text_encoder.encode(prompt, max_length=MAX_LEN)
-        context = context.cpu().to(torch.bfloat16)  # [512, 100352]
-        mask = mask.cpu().bool()                     # [512]
-    
-    torch.save({"context": context, "mask": mask}, cache_path)
-
-# 处理所有任务
-for dataset_dir in [
-    "./data/libero_spatial_no_noops_lerobot",
-    "./data/libero_object_no_noops_lerobot",
-    "./data/libero_goal_no_noops_lerobot",
-    "./data/libero_10_no_noops_lerobot",
-]:
-    tasks_path = Path(dataset_dir) / "meta" / "tasks.jsonl"
-    if not tasks_path.exists():
-        continue
-    with open(tasks_path) as f:
-        for line in f:
-            task = json.loads(line)["task"]
-            encode_and_cache(task)
-
-print("文本 embedding 预计算完成！")
-```
-
-**预期输出**：
-```
-data/text_embeds_cache/libero_reason1/
-├── {hash1}.pt   # 包含 {"context": [512, 100352], "mask": [512]}
-├── {hash2}.pt
-└── ...
+```bash
+python scripts/compute_dataset_stats.py \
+    --config configs/train_cosmos_2b_libero.yaml \
+    --output ./dataset_stats.json
 ```
 
 ---
 
 ## Checkpoint 准备
 
-### 1. 下载 Cosmos-Predict2.5-2B-Posttrain
+### 1. 下载官方 Checkpoint
 
-从 NVIDIA 官方发布下载 checkpoint。你应该得到一个 consolidated `.pt` 文件：
-```
-nvidia/Cosmos-Predict2.5-2B-Posttrain/
-└── model.pt   # ~15GB
-```
+从 NVIDIA 官方发布下载 `Cosmos-Predict2.5-2B-Posttrain`，应包含：
 
-### 2. 提取 DIT 和 VAE 权重
+- consolidated DiT checkpoint (约 15GB)
+- `tokenizer.pth` (VAE)
 
-运行提取脚本：
+### 2. 提取 DiT / VAE 权重（可选）
+
+如果 checkpoint 是 consolidated 格式，可运行提取脚本：
 
 ```bash
 python scripts/extract_ckpt.py \
-    --input /home/jwhe/linyihan/CKPT/cosmos/81edfebe-bd6a-4039-8c1d-737df1a790bf_ema_bf16.pt \
+    --input /path/to/81edfebe-bd6a-4039-8c1d-737df1a790bf_ema_bf16.pt \
     --output_dir ./checkpoints
 ```
 
-**输出**：
+输出：
+
 ```
 checkpoints/
-├── cosmos_dit.pt   # DiT 权重 (~4GB)
-└── cosmos_vae.pt   # VAE 权重 (~1GB)
+├── cosmos_dit.pt   # DiT 权重
+└── cosmos_vae.pt   # VAE 权重
 ```
 
-### 3. 验证提取
-
-```python
-import torch
-dit_state = torch.load("./checkpoints/cosmos_dit.pt", map_location="cpu")
-print(f"DIT keys: {len(dit_state)}")
-print(f"示例 keys: {list(dit_state.keys())[:5]}")
-```
+若已有 `tokenizer.pth`，可直接在配置中指定 `vae_checkpoint` 路径。
 
 ---
 
 ## 训练
 
-### 1. 配置训练参数
+### 配置
 
-编辑 `configs/train_cosmos_2b.yaml`：
+我们提供了针对 LIBERO 和 RoboTwin 的现成训练配置：
+
+| 配置                                    | 说明                  |
+| --------------------------------------- | --------------------- |
+| `configs/train_cosmos_2b_libero.yaml`   | LIBERO 四套件联合训练 |
+| `configs/train_cosmos_2b_robotwin.yaml` | RoboTwin 多任务训练   |
+
+关键参数（以 `train_cosmos_2b_robotwin.yaml` 为例）：
 
 ```yaml
 model:
-  dit_checkpoint: ./checkpoints/cosmos_dit.pt
-  vae_checkpoint: ./checkpoints/cosmos_vae.pt
-  
-data:
-  train:
-    dataset_dirs:
-      - ./data/libero_spatial_no_noops_lerobot
-      # 添加更多数据集...
-    text_embedding_cache_dir: ./data/text_embeds_cache/libero_reason1
-    
+    dit_checkpoint: /path/to/cosmos_dit.pt
+    vae_checkpoint: /path/to/tokenizer.pth
+    lambda_action: 1.0
+    enable_gradient_checkpointing: true
+
+    dit_config:
+        max_img_h: 240
+        max_img_w: 320
+        num_blocks: 28
+        model_channels: 2048
+        crossattn_proj_in_channels: 100352 # Reason-1 7B
+
+    action_head:
+        action_dim: 16 # RoboTwin 双臂 16 维
+        hidden_dim: 1024
+        num_layers: 14
+
 trainer:
-  output_dir: ./outputs/cosmos_2b_libero
-  batch_size: 2              # 每 GPU（80GB 可以容纳 2-4）
-  learning_rate: 2.0e-5      # Video DiT 学习率
-  action_learning_rate: 1.0e-4  # Action head 学习率
+    learning_rate: 2.0e-4
+    action_learning_rate: 2.0e-4
+    batch_size: 16
+    mixed_precision: "bf16"
+    deepspeed:
+        zero_optimization:
+            stage: 2
 ```
 
-### 2. 启动训练
+### 启动训练
 
-**单节点，4 张 GPU**：
-```bash
-torchrun --nproc_per_node=4 scripts/train.py
-```
-
-**使用 DeepSpeed ZeRO-2**（已在 yaml 中配置）：
-```bash
-accelerate launch --config_file accelerate_config.yaml scripts/train.py
-```
-
-**注意**：
-- 首次运行会计算数据集统计信息用于归一化
-- 训练日志保存在 `./outputs/cosmos_2b_libero/`
-- 每 5000 步保存 checkpoint
-
-### 3. 监控训练
+**单节点多 GPU (Libero / RoboTwin)**:
 
 ```bash
-# 查看日志
-tail -f outputs/cosmos_2b_libero/logs/latest.log
+# 使用默认 config（当前默认指向 robotwin）
+python scripts/train.py
 
-# 检查 GPU 使用率
-watch -n 1 nvidia-smi
+# 显式指定 LIBERO 配置
+python scripts/train.py --config-name train_cosmos_2b_libero
 ```
 
-**预期指标**：
-- `loss_video`: ~0.5-1.0（速度预测 MSE）
-- `loss_action`: ~0.1-0.5（动作 MSE，取决于归一化）
-- `loss_total`: 联合损失
+**torchrun 启动**:
+
+```bash
+torchrun --nproc_per_node=4 scripts/train.py --config-name train_cosmos_2b_libero
+```
+
+**混合精度说明**: 训练支持 `bf16` / `fp16` / `no`，可在配置文件中切换。
+
+### 训练恢复 (Resume / Hot-start)
+
+```yaml
+trainer:
+    resume: true
+    resume_from_checkpoint: ./outputs/.../checkpoints/step_0015000.pt
+    resume_reset_step: true # true: 加载权重但 step 归零；false: 完全恢复训练状态
+```
 
 ---
 
-## 推理
+## 评估
 
-### 仅动作推理
+### LIBERO 评估
 
-```python
-from cosmos_wam.models import CosmosWAM
-import torch
+**单任务快速测试**:
 
-# 加载模型
-model = CosmosWAM(dit=dit, vae=vae, action_head=action_head)
-model.load_state_dict(torch.load("./outputs/cosmos_2b_libero/checkpoints/final.pt")["model"])
-model.eval().cuda()
-
-# 准备第一帧 (3, H, W)
-first_frame = ...  # torch.Tensor [3, 224, 448]
-context = ...      # 预计算的文本 embedding [512, 100352]
-
-# 推理动作
-action = model.infer_action(
-    first_frame_pixels=first_frame,
-    action_horizon=32,
-    context=context,
-    num_inference_steps=20
-)
-print(action.shape)  # [1, 32, 7]
+```bash
+bash libero.sh
 ```
 
-### 联合视频 + 动作生成
+**批量测试全部任务**:
 
-```python
-result = model.infer_joint(
-    first_frame_pixels=first_frame,
-    action_horizon=32,
-    context=context,
-    num_inference_steps=20
-)
-video = result["video_pixels"]  # [1, 3, T, H, W]
-action = result["action"]       # [1, 32, 7]
+```bash
+bash libero_batch.sh
+```
+
+**命令行自定义**:
+
+```bash
+python experiments/libero/eval_libero_single.py \
+    ckpt=/path/to/checkpoint.pt \
+    EVALUATION.task_suite_name=libero_spatial \
+    EVALUATION.task_id=0 \
+    EVALUATION.num_trials=50 \
+    EVALUATION.dataset_stats_path=./dataset_stats.json \
+    EVALUATION.text_embedding_cache_dir=./data/text_embeds_cache/libero
+```
+
+LIBERO 关键超参:
+
+- `num_inference_steps`: 4–8
+- `replan_steps`: 5
+- `action_horizon`: 32
+
+### RoboTwin 评估
+
+**单任务评估**:
+
+```bash
+bash robotwin.sh
+```
+
+**带 WandB 日志的批量评估**:
+
+```bash
+bash robotwin_wandb.sh
+```
+
+**多 GPU 并行评估**（推荐用于大规模 benchmark）:
+
+```bash
+# Python 多进程版
+bash robotwin_wandb_multigpu.sh
+
+# GNU parallel 版（8 GPU 跑 4 任务并行）
+bash robotwin_wandb_parallel.sh
+```
+
+RoboTwin 关键超参:
+
+- `num_inference_steps`: 20
+- `replan_steps`: 4
+- `action_horizon`: 8
+
+### 在线文本编码器（显存受限场景）
+
+对于 24GB 显存设备（如 RTX 4090），可以在评估时开启**在线文本编码**，将 Reason-1 7B 放在独立 GPU 上实时计算 embedding：
+
+```yaml
+EVALUATION:
+    use_online_text_encoder: true
+    online_text_encoder_path: /path/to/Cosmos-Reason1-7B
+    text_encoder_device: cuda:0
+    device: cuda:1
 ```
 
 ---
@@ -315,82 +301,83 @@ action = result["action"]       # [1, 32, 7]
 ## 项目结构
 
 ```
-cosmos-wam/
+CosmosWAM/
 ├── cosmos_wam/
 │   ├── models/
-│   │   ├── cosmos_wam.py         # 主模型包装器（含 hooks）
+│   │   ├── cosmos_wam.py         # 主模型：联合视频 + 动作训练损失
 │   │   ├── action_head.py        # 14 层 ActionDiT
-│   │   ├── dit_wrapper.py        # MiniTrainDIT（28 层）
-│   │   ├── vae_wrapper.py        # Wan2pt1 VAE
-│   │   └── ckpt_loader.py        # Checkpoint 加载
-│   ├── datasets/lerobot/         # LeRobot 数据集支持
+│   │   ├── dit_wrapper.py        # MiniTrainDIT（28 层 Cosmos DiT 封装）
+│   │   ├── vae_wrapper.py        # Wan2.1 VAE 接口
+│   │   └── ckpt_loader.py        # Checkpoint 加载工具
+│   ├── datasets/lerobot/         # LeRobot 格式数据集、Processor、Transform
 │   ├── trainer.py                # 训练循环（Accelerate + DeepSpeed）
-│   ├── runtime.py                # 训练入口
-│   └── utils/
+│   ├── runtime.py                # 训练入口（构建模型 + 启动训练）
+│   ├── schedulers/               # Rectified Flow 相关调度
+│   └── utils/                    # 日志、采样器、视频 IO 等
 ├── configs/
-│   └── train_cosmos_2b.yaml      # 训练配置
-└── scripts/
-    ├── train.py                  # 训练脚本
-    └── extract_ckpt.py           # Checkpoint 提取
+│   ├── train_cosmos_2b_libero.yaml
+│   ├── train_cosmos_2b_robotwin.yaml
+│   ├── sim_libero.yaml           # LIBERO 评估配置
+│   └── sim_robotwin.yaml         # RoboTwin 评估配置
+├── experiments/
+│   ├── libero/                   # LIBERO 评估脚本
+│   └── robotwin/                 # RoboTwin 评估脚本（含 WandB / 多 GPU）
+├── scripts/
+│   ├── train.py                  # 训练入口
+│   ├── extract_ckpt.py           # Checkpoint 提取
+│   ├── precompute_*_text_embeds.py # 文本 embedding 预计算
+│   └── compute_dataset_stats.py  # 数据集统计信息计算
+├── docs/
+│   ├── va_02.png                 # 架构图
+│   ├── libero_evaluation.md
+│   ├── ROBOTWIN_WANDB_README.md
+│   └── MULTIGPU_README.md
+├── libero.sh / libero_batch.sh
+├── robotwin.sh / robotwin_wandb.sh / robotwin_wandb_multigpu.sh / robotwin_wandb_parallel.sh
+└── pyproject.toml
 ```
 
 ---
 
 ## 关键设计决策
 
-### 1. 为什么 Action Head 使用第 14-27 层？
+### 为什么 Action Head 只关注 DiT 第 14–27 层？
 
-- 第 0-13 层：底层视觉特征（边缘、纹理）
-- 第 14-27 层：高层语义特征（物体、运动、 affordance）
-- 动作决策需要语义理解，而非底层像素
+- 第 0–13 层主要编码底层视觉特征（边缘、纹理、颜色）
+- 第 14–27 层编码高层语义与时空特征（物体、运动、affordance）
+- 机器人动作决策需要语义理解而非底层像素，因此 cross-attention 仅接入后半部分层级
 
-### 2. 为什么视频条件不做 pooling？
+### 视频与动作使用独立的 Timestep
 
-- 保留完整空间结构（例如物体位置）
-- Action head 使用空间位置编码来理解布局
-- 计算量更大但空间精度更好
-
-### 3. 视频和动作使用独立的 Timestep
-
-- 视频和动作在训练期间可以有不同的噪声水平
-- 比共享 timestep 更灵活
-- 与 FastWAM 的设计保持一致
+- 视频分支和动作分支在训练期间可处于不同的噪声水平
+- 相比共享 timestep 更加灵活
+- 与 FastWAM 等 SOTA 设计保持一致
 
 ---
 
 ## 故障排除
 
-### 显存不足
+### 显存不足 (OOM)
 
 1. 减小 `batch_size`（尝试 1）
-2. 启用梯度检查点（默认已开启）
-3. 使用 ZeRO-3 替代 ZeRO-2
-4. 减小配置中的 `video_size`（例如 [192, 384]）
+2. 确保 `enable_gradient_checkpointing: true`
+3. 切换到 DeepSpeed ZeRO-3
+4. 降低 `video_size` 或 `num_frames`
+5. 评估时开启 `use_online_text_encoder` 分流文本编码器
 
 ### 文本 Embedding 维度不匹配
 
-如果看到关于 `crossattn_proj` 维度的错误：
-- 检查你的 checkpoint 使用 Reason-1 7B（100352 维）而不是 T5（1024 维）
-- 验证 `use_crossattn_projection=True` 和 `crossattn_proj_in_channels=100352`
+若出现 `crossattn_proj` 维度错误，请检查：
+
+- 是否使用了 **Reason-1 7B**（100,352 维）而非 T5（1,024 维）
+- 配置中 `use_crossattn_projection=true` 且 `crossattn_proj_in_channels=100352`
 
 ### 动作损失不收敛
 
-1. 检查动作归一化（应该在 -1 到 1 之间）
-2. 增大动作学习率（尝试 2e-4）
-3. 验证文本 embedding 是否正确加载
-
----
-
-## 引用
-
-如果你使用本代码，请引用：
-```bibtex
-@software{cosmos_wam,
-  title={Cosmos-WAM: World Action Model},
-  year={2025},
-  note={Based on NVIDIA Cosmos-Predict2.5}
-}
-```
+1. 检查动作是否已归一化到合适范围
+2. 增大 `action_learning_rate`（尝试 2e-4）
+3. 验证文本 embedding 是否正确加载且与训练时一致
+4. 检查 `dataset_stats.json` 是否与训练配置匹配
 
 ---
 
