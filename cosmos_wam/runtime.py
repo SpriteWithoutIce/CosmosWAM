@@ -90,6 +90,14 @@ def run_training(cfg: DictConfig):
         num_cond_frames=cfg.model.get("num_cond_frames", 1),
     )
 
+    # 4.5 Compile model with torch.compile for H100 optimization
+    if cfg.model.get("compile", False):
+        print("[runtime] Compiling model with torch.compile (mode='max-autotune')...")
+        # Only compile DiT and action_head, not VAE (VAE is frozen and called once)
+        model.dit = torch.compile(model.dit, mode="max-autotune", fullgraph=False)
+        model.action_head = torch.compile(model.action_head, mode="max-autotune", fullgraph=False)
+        print("[runtime] Model compilation done")
+
     # 5. Build Datasets
     train_dataset = instantiate(cfg.data.train)
     val_dataset = instantiate(cfg.data.get("val", None)) if "val" in cfg.data else None

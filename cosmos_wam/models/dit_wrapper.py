@@ -10,6 +10,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
+# Try to import flash attention
+try:
+    from flash_attn import flash_attn_func
+    HAS_FLASH_ATTN = True
+except ImportError:
+    HAS_FLASH_ATTN = False
+    flash_attn_func = None
+
 # ---------------------------------------------------------------------------
 # RMSNorm (replaces te.pytorch.RMSNorm)
 # ---------------------------------------------------------------------------
@@ -79,9 +87,42 @@ def torch_attention_op(
     return out
 
 
+def flash_attention_op(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
+    flatten_heads: bool = True,
+) -> torch.Tensor:
+    """Flash Attention backend. q,k,v: [B, S, H, D] -> output: [B, S, H, D] or [B, S, (H*D)]
+    
+    Flash_attn expects: [B, S, H, D] format
+    """
+    if not HAS_FLASH_ATTN:
+        raise RuntimeError("Flash Attention is not installed. Install with: pip install flash-attn")
+    
+    # flash_attn_func expects (batch_size, seqlen, nheads, headdim)
+    # q, k, v are already in [B, S, H, D] format
+    out = flash_attn_func(q, k, v, causal=False)
+    
+    if flatten_heads:
+        out = rearrange(out, "b s h d -> b s (h d)")
+    return out
+
+
 class MinimalA2AAttnOp(nn.Module):
     def forward(self, q, k, v, **kwargs):
         return torch_attention_op(q, k, v, attn_mask=None)
+
+    def set_context_parallel_group(self, *args, **kwargs):
+        pass
+
+
+class FlashAttnOp(nn.Module):
+    """Flash Attention operation wrapper."""
+    
+    def forward(self, q, k, v, **kwargs):
+        return flash_attention_op(q, k, v, attn_mask=None)
 
     def set_context_parallel_group(self, *args, **kwargs):
         pass
@@ -128,6 +169,13 @@ class Attention(nn.Module):
             self.attn_op = MinimalA2AAttnOp()
         elif self.backend == "torch":
             self.attn_op = torch_attention_op
+        elif self.backend == "flash":
+            if not HAS_FLASH_ATTN:
+                raise ValueError(
+                    f"Backend '{backend}' requested but flash-attn is not installed. "
+                    f"Install with: pip install flash-attn --no-build-isolation"
+                )
+            self.attn_op = FlashAttnOp()
         else:
             raise ValueError(f"Unsupported backend: {backend}")
 
