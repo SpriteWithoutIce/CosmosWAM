@@ -5,8 +5,8 @@ model:
   dit_checkpoint: /home/jwhe/linyihan/CKPT/cosmos/81edfebe-bd6a-4039-8c1d-737df1a790bf_ema_bf16.pt
   vae_checkpoint: /home/jwhe/linyihan/CKPT/cosmos/tokenizer.pth
   load_vae_weights: true
-  enable_gradient_checkpointing: false  # 关闭以加速训练
-  compile: true                          # H100 使用 torch.compile 加速
+  enable_gradient_checkpointing: true
+  compile: false                          # H100 使用 torch.compile 加速
   lambda_action: 1.0
   num_cond_frames: 1
   vae_temporal_window: 16
@@ -131,7 +131,7 @@ trainer:
   warmup_steps: 100
   
   wandb:
-    enabled: false
+    enabled: true
     project: "cosmos-wam-robotwin"
     name: null
   
