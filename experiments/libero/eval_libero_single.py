@@ -357,7 +357,7 @@ def run_single_episode(
 ) -> tuple[bool, list]:
     """Run a single episode."""
     max_steps = {
-        "libero_spatial": 500,
+        "libero_spatial": 400,
         "libero_object": 400,
         "libero_goal": 400,
         "libero_10": 700,
