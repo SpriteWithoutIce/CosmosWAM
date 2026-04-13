@@ -112,7 +112,7 @@ trainer:
   learning_rate: 1.0e-4
   action_learning_rate: 1.0e-4
   weight_decay: 1.0e-2
-  batch_size: 64         # H100 80GB 支持更大 batch
+  batch_size: 32
   num_workers: 16
   num_epochs: 5
   max_steps: null
