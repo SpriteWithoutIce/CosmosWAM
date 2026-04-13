@@ -114,24 +114,24 @@ trainer:
   weight_decay: 1.0e-2
   batch_size: 64         # H100 80GB 支持更大 batch
   num_workers: 16
-  num_epochs: 9
+  num_epochs: 5
   max_steps: null
   log_every: 10
-  save_every: 5000
+  save_every: 2000
   eval_every: 200
   gradient_accumulation_steps: 1
   max_grad_norm: 1.0
   seed: ${seed}
   resume: false
-  resume_from_checkpoint: /home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260409_132739/checkpoints/final.pt
+  resume_from_checkpoint: /home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260410_122224/checkpoints/step_0015000.pt
   resume_reset_step: true       # true: 加载权重但从 step=0 开始计数；false: 恢复 step 和 epoch
-  mixed_precision: "bf16"  # 使用 bf16 加速训练（RTX 3090/4090/A100 支持）
+  mixed_precision: "bf16"
   
   lr_schedule: "cosine"
   warmup_steps: 100
   
   wandb:
-    enabled: true
+    enabled: false
     project: "cosmos-wam-robotwin"
     name: null
   
@@ -139,5 +139,4 @@ trainer:
     zero_optimization:
       stage: 1
     gradient_clipping: 1.0
-    # H100 可以开启 overlap 加速
     communication_data_type: fp16  # 通信使用 fp16 加速
