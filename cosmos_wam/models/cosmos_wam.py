@@ -43,25 +43,26 @@ class CosmosWAM(nn.Module):
         context = sample["context"]          # [B, L, D]
         proprio = sample.get("proprio", None)
 
-        # Get DiT's device (where the model parameters are)
+        # Get DiT's device and dtype (match model parameters for mixed precision)
         dit_device = next(self.dit.parameters()).device
+        dit_dtype = next(self.dit.parameters()).dtype
         
-        # Ensure all inputs are float32 (for no mixed precision mode)
-        action = action.to(device=dit_device, dtype=torch.float32)
-        context = context.to(device=dit_device, dtype=torch.float32)
+        # Move inputs to device, using model's dtype (supports fp32/bf16/fp16)
+        action = action.to(device=dit_device, dtype=dit_dtype)
+        context = context.to(device=dit_device, dtype=dit_dtype)
         if proprio is not None:
-            proprio = proprio.to(device=dit_device, dtype=torch.float32)
+            proprio = proprio.to(device=dit_device, dtype=dit_dtype)
 
         with torch.no_grad():
-            # VAE encode - input needs to be on VAE's device and float32
+            # VAE encode - VAE uses its own dtype
             latents = self.vae.encode(video)  # [B, C_latent, T_latent, H_latent, W_latent]
-            # Move to DiT's device and convert to float32
-            latents = latents.to(device=dit_device, dtype=torch.float32)
+            # Move to DiT's device and convert to DiT's dtype
+            latents = latents.to(device=dit_device, dtype=dit_dtype)
         
         # Pad latents from 16 to 18 channels to match Cosmos checkpoint
         if latents.shape[1] == 16:
             padding = torch.zeros(latents.shape[0], 2, *latents.shape[2:], 
-                                  device=dit_device, dtype=torch.float32)
+                                  device=dit_device, dtype=dit_dtype)
             latents = torch.cat([latents, padding], dim=1)  # [B, 18, T, H, W]
         return {
             "latents": latents,
