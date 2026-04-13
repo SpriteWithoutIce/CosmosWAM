@@ -6,7 +6,7 @@ model:
   vae_checkpoint: /home/jwhe/linyihan/CKPT/cosmos/tokenizer.pth
   load_vae_weights: true
   enable_gradient_checkpointing: false  # 关闭以加速训练
-  compile: true                          # H100 使用 torch.compile 加速
+  compile: false                         # 分布式训练下 torch.compile 会导致 NCCL 超时
   lambda_action: 1.0
   num_cond_frames: 1
   vae_temporal_window: 16
@@ -23,7 +23,7 @@ model:
     num_blocks: 28
     num_heads: 16
     mlp_ratio: 4.0
-    atten_backend: "flash"  # 支持: minimal_a2a, torch, flash (需要安装 flash-attn)
+    atten_backend: "minimal_a2a"  # 稳定选项: minimal_a2a, torch, flash
     crossattn_emb_channels: 1024
     use_crossattn_projection: true
     crossattn_proj_in_channels: 100352
