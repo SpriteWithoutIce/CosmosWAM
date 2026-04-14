@@ -39,7 +39,7 @@ model:
   action_head:
     action_dim: 16          # RoboTwin 双臂: 16维 (左臂8维 + 右臂8维)
     hidden_dim: 1024
-    num_layers: 14
+    num_layers: 28
     num_heads: 16
     video_dim: 2048
     mlp_ratio: 4.0

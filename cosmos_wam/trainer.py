@@ -104,8 +104,8 @@ class CosmosWAMTrainer:
         self.train_loader = self._build_loader(self.train_dataset, worker_init_fn=worker_init_fn)
 
         # Optimizer: different LR for video (dit) and action head if configured
-        video_params = list(self.model.dit.parameters())
-        action_params = list(self.model.action_head.parameters())
+        video_params = list(self.model.mot.mixtures["video"].parameters())
+        action_params = list(self.model.mot.mixtures["action"].parameters())
         param_groups = [
             {"params": video_params, "lr": self.learning_rate, "weight_decay": self.weight_decay},
             {"params": action_params, "lr": float(cfg.get("action_learning_rate", self.learning_rate)), "weight_decay": self.weight_decay},

@@ -41,6 +41,8 @@ from experiments.libero.libero_utils import (
 )
 from cosmos_wam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from cosmos_wam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
+from cosmos_wam.models.action_head_mot import ActionExpert
+from cosmos_wam.models.mot import MoT
 from libero.libero import benchmark
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -492,7 +494,7 @@ def eval_single_process(cfg: DictConfig):
     from cosmos_wam.models.cosmos_wam import CosmosWAM
     from cosmos_wam.models.dit_wrapper import MiniTrainDIT
     from cosmos_wam.models.vae_wrapper import Wan2pt1VAEInterface
-    from cosmos_wam.models.action_head import ActionDiT
+
     
     # Build model
     vae = Wan2pt1VAEInterface(
@@ -528,22 +530,29 @@ def eval_single_process(cfg: DictConfig):
         use_t_embedding_adaln_lora=cfg.model.dit_config.get("use_t_embedding_adaln_lora", True),
     )
     
-    action_head = ActionDiT(
+    action_head = ActionExpert(
         action_dim=cfg.model.action_head.action_dim,
         hidden_dim=cfg.model.action_head.hidden_dim,
-        num_layers=cfg.model.action_head.num_layers,
+        num_layers=cfg.model.dit_config.num_blocks,
         num_heads=cfg.model.action_head.num_heads,
-        video_dim=cfg.model.action_head.video_dim,
+        text_dim=cfg.model.dit_config.get("crossattn_proj_in_channels", 100352),
         mlp_ratio=cfg.model.action_head.get("mlp_ratio", 4.0),
-        actions_per_latent=cfg.model.action_head.get("actions_per_latent", 8),
+        backend=cfg.model.dit_config.get("atten_backend", "minimal_a2a"),
+        use_wan_fp32_strategy=cfg.model.dit_config.get("use_wan_fp32_strategy", False),
+        adaln_lora_dim=cfg.model.dit_config.get("adaln_lora_dim", 256),
     )
-    
+
+    mot = MoT(
+        mixtures={"video": dit, "action": action_head},
+        mot_checkpoint_mixed_attn=cfg.model.get("mot_checkpoint_mixed_attn", True),
+    )
+
     model = CosmosWAM(
-        dit=dit,
+        mot=mot,
         vae=vae,
-        action_head=action_head,
         lambda_action=cfg.model.get("lambda_action", 1.0),
         num_cond_frames=cfg.model.get("num_cond_frames", 1),
+        actions_per_latent=cfg.model.action_head.get("actions_per_latent", 8),
     )
     model = model.to(device).eval()
     

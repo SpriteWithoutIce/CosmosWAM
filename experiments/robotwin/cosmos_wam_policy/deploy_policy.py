@@ -44,7 +44,8 @@ from cosmos_wam.datasets.dataset_utils import ResizeSmallestSideAspectPreserving
 from cosmos_wam.models.cosmos_wam import CosmosWAM
 from cosmos_wam.models.dit_wrapper import MiniTrainDIT, SACConfig
 from cosmos_wam.models.vae_wrapper import Wan2pt1VAEInterface
-from cosmos_wam.models.action_head import ActionDiT
+from cosmos_wam.models.action_head_mot import ActionExpert
+from cosmos_wam.models.mot import MoT
 
 logger = logging.getLogger(__name__)
 
@@ -416,23 +417,31 @@ class CosmosWAMRobotWinPolicy:
         )
         
         # 3. Build Action Head
-        action_head = ActionDiT(
+        action_head = ActionExpert(
             action_dim=model_cfg.action_head.action_dim,
             hidden_dim=model_cfg.action_head.hidden_dim,
-            num_layers=model_cfg.action_head.num_layers,
+            num_layers=model_cfg.dit_config.num_blocks,
             num_heads=model_cfg.action_head.num_heads,
-            video_dim=model_cfg.action_head.video_dim,
+            text_dim=model_cfg.dit_config.get("crossattn_proj_in_channels", 100352),
             mlp_ratio=model_cfg.action_head.get("mlp_ratio", 4.0),
-            actions_per_latent=model_cfg.action_head.get("actions_per_latent", 8),
+            backend=model_cfg.dit_config.get("atten_backend", "minimal_a2a"),
+            use_wan_fp32_strategy=model_cfg.dit_config.get("use_wan_fp32_strategy", False),
+            adaln_lora_dim=model_cfg.dit_config.get("adaln_lora_dim", 256),
         )
-        
-        # 4. Build CosmosWAM
+
+        # 4. Build MoT
+        mot = MoT(
+            mixtures={"video": dit, "action": action_head},
+            mot_checkpoint_mixed_attn=model_cfg.get("mot_checkpoint_mixed_attn", True),
+        )
+
+        # 5. Build CosmosWAM
         self.model = CosmosWAM(
-            dit=dit,
+            mot=mot,
             vae=vae,
-            action_head=action_head,
             lambda_action=model_cfg.get("lambda_action", 1.0),
             num_cond_frames=model_cfg.get("num_cond_frames", 1),
+            actions_per_latent=model_cfg.action_head.get("actions_per_latent", 8),
         )
         self.model = self.model.to(self.device).to(self.model_dtype)
         self.model.eval()

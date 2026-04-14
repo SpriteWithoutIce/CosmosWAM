@@ -96,8 +96,11 @@ def flash_attention_op(
 ) -> torch.Tensor:
     """Flash Attention backend. q,k,v: [B, S, H, D] -> output: [B, S, H, D] or [B, S, (H*D)]
     
-    Flash_attn expects: [B, S, H, D] format
+    Flash_attn expects: [B, S, H, D] format. Falls back to torch sdpa if attn_mask is provided.
     """
+    if attn_mask is not None:
+        return torch_attention_op(q, k, v, attn_mask=attn_mask, flatten_heads=flatten_heads)
+    
     if not HAS_FLASH_ATTN:
         raise RuntimeError("Flash Attention is not installed. Install with: pip install flash-attn")
     
@@ -112,7 +115,8 @@ def flash_attention_op(
 
 class MinimalA2AAttnOp(nn.Module):
     def forward(self, q, k, v, **kwargs):
-        return torch_attention_op(q, k, v, attn_mask=None)
+        attn_mask = kwargs.get("attn_mask", None)
+        return torch_attention_op(q, k, v, attn_mask=attn_mask)
 
     def set_context_parallel_group(self, *args, **kwargs):
         pass
@@ -122,7 +126,8 @@ class FlashAttnOp(nn.Module):
     """Flash Attention operation wrapper."""
     
     def forward(self, q, k, v, **kwargs):
-        return flash_attention_op(q, k, v, attn_mask=None)
+        attn_mask = kwargs.get("attn_mask", None)
+        return flash_attention_op(q, k, v, attn_mask=attn_mask)
 
     def set_context_parallel_group(self, *args, **kwargs):
         pass
@@ -224,8 +229,8 @@ class Attention(nn.Module):
                 k = k.to(orig_dtype)
         return q, k, v
 
-    def compute_attention(self, q, k, v, **kwargs):
-        result = self.attn_op(q, k, v, **kwargs)
+    def compute_attention(self, q, k, v, attn_mask=None, **kwargs):
+        result = self.attn_op(q, k, v, attn_mask=attn_mask, **kwargs)
         return self.output_dropout(self.output_proj(result))
 
     def forward(
@@ -233,10 +238,11 @@ class Attention(nn.Module):
         x,
         context: Optional[torch.Tensor] = None,
         rope_emb: Optional[torch.Tensor] = None,
+        attn_mask: Optional[torch.Tensor] = None,
         **kwargs,
     ):
         q, k, v = self.compute_qkv(x, context, rope_emb=rope_emb)
-        return self.compute_attention(q, k, v)
+        return self.compute_attention(q, k, v, attn_mask=attn_mask, **kwargs)
 
     def set_context_parallel_group(self, *args, **kwargs):
         self.attn_op.set_context_parallel_group(*args, **kwargs)
@@ -753,15 +759,14 @@ class MiniTrainDIT(nn.Module):
         x = x.view(B, C, T * p_t, H * p_s, W * p_s)
         return x
 
-    def forward(
+    def pre_dit(
         self,
         x_B_C_T_H_W: torch.Tensor,
         timesteps_B_T: torch.Tensor,
         crossattn_emb: torch.Tensor,
         fps: Optional[torch.Tensor] = None,
         padding_mask: Optional[torch.Tensor] = None,
-        intermediate_feature_ids: Optional[List[int]] = None,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
+    ) -> Dict[str, Any]:
         x_B_T_H_W_D, rope_emb_L_1_1_D, _ = self.prepare_embedded_sequence(
             x_B_C_T_H_W, fps=fps, padding_mask=padding_mask
         )
@@ -775,20 +780,58 @@ class MiniTrainDIT(nn.Module):
         t_embedding_B_T_D = self.t_embedding_norm(t_embedding_B_T_D)
 
         B, T, H, W, D = x_B_T_H_W_D.shape
+        x_tokens = rearrange(x_B_T_H_W_D, "b t h w d -> b (t h w) d")
+        return {
+            "x_B_T_H_W_D": x_B_T_H_W_D,
+            "tokens": x_tokens,
+            "freqs": rope_emb_L_1_1_D,
+            "t": t_embedding_B_T_D,
+            "t_mod": t_embedding_B_T_D,
+            "context": crossattn_emb,
+            "meta": {
+                "B": B,
+                "T": T,
+                "H": H,
+                "W": W,
+                "D": D,
+            },
+        }
+
+    def post_dit(self, tokens: torch.Tensor, pre_state: Dict[str, Any]) -> torch.Tensor:
+        x_B_T_H_W_D = rearrange(tokens, "b (t h w) d -> b t h w d", t=pre_state["meta"]["T"], h=pre_state["meta"]["H"], w=pre_state["meta"]["W"])
+        x_B_T_H_W_O = self.final_layer(x_B_T_H_W_D, pre_state["t"])
+        x_B_C_Tt_Hp_Wp = self.unpatchify(x_B_T_H_W_O)
+        return x_B_C_Tt_Hp_Wp
+
+    def forward(
+        self,
+        x_B_C_T_H_W: torch.Tensor,
+        timesteps_B_T: torch.Tensor,
+        crossattn_emb: torch.Tensor,
+        fps: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None,
+        intermediate_feature_ids: Optional[List[int]] = None,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
+        pre_state = self.pre_dit(x_B_C_T_H_W, timesteps_B_T, crossattn_emb, fps=fps, padding_mask=padding_mask)
+        x_B_T_H_W_D = pre_state["x_B_T_H_W_D"]
+        t_embedding_B_T_D = pre_state["t"]
+        rope_emb_L_1_1_D = pre_state["freqs"]
+        crossattn_emb_local = pre_state["context"]
+
         intermediate_features = []
         for i, block in enumerate(self.blocks):
             x_B_T_H_W_D = block(
                 x_B_T_H_W_D,
                 t_embedding_B_T_D,
-                crossattn_emb,
+                crossattn_emb_local,
                 rope_emb_L_1_1_D=rope_emb_L_1_1_D,
             )
             if intermediate_feature_ids and i in intermediate_feature_ids:
                 feat = rearrange(x_B_T_H_W_D, "b t h w d -> b (t h w) d")
                 intermediate_features.append(feat)
 
-        x_B_T_H_W_O = self.final_layer(x_B_T_H_W_D, t_embedding_B_T_D)
-        x_B_C_Tt_Hp_Wp = self.unpatchify(x_B_T_H_W_O)
+        pre_state["x_B_T_H_W_D"] = x_B_T_H_W_D
+        x_B_C_Tt_Hp_Wp = self.post_dit(rearrange(x_B_T_H_W_D, "b t h w d -> b (t h w) d"), pre_state)
 
         if intermediate_feature_ids:
             return x_B_C_Tt_Hp_Wp, intermediate_features
