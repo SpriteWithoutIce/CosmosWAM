@@ -6,9 +6,9 @@ Hash is computed ONLY on the task description (no prompt template).
 
 Usage:
     python scripts/precompute_libero_text_embeds.py \
-        --dataset_root /home/jwhe/linyihan/datasets/libero_mujoco3.3.2 \
-        --model_path /path/to/Cosmos-Reason1-7B \
-        --output_dir ./data/text_embeds_cache/libero \
+        --dataset_root /mnt/data/linyihan/datasets \
+        --model_path /mnt/data/linyihan/Cosmos-Reason1-7b \
+        --output_dir /mnt/data/linyihan/datasets/text_embeds_cache/libero \
         --context_len 128
 """
 
