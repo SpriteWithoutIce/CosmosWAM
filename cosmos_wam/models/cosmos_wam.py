@@ -302,6 +302,12 @@ class CosmosWAM(nn.Module):
         context: torch.Tensor,
         num_inference_steps: int = 20,
     ) -> Dict[str, Any]:
+        """Inference: jointly generate future video latents and actions.
+        
+        Video is denoised via standard multi-step Euler. Action is predicted
+        using ONLY the clean conditional frame (first frame), matching the
+        original architecture's behavior.
+        """
         self.eval()
         if first_frame_pixels.ndim == 4:
             first_frame_pixels = first_frame_pixels.unsqueeze(0)
@@ -325,68 +331,66 @@ class CosmosWAM(nn.Module):
             video_latents = torch.randn(B, C, Tl, Hl, Wl, device=device, dtype=dit_dtype)
             video_latents[:, :, :1] = first_frame_latent.clone()
 
-        action = torch.randn(B, action_horizon, self.action_head.action_dim, device=device, dtype=dit_dtype)
-
-        H_int = Hl // self.dit.patch_spatial
-        W_int = Wl // self.dit.patch_spatial
-        video_tokens_per_frame = H_int * W_int
-
+        # Denoise video with standard multi-step Euler
         for i in range(num_inference_steps):
             t = torch.full((B,), 1.0 - i / num_inference_steps, device=device, dtype=torch.float32)
             dt = -1.0 / num_inference_steps
 
-            video_pre = self.dit.pre_dit(
+            pred_v = self.dit(
                 x_B_C_T_H_W=video_latents,
                 timesteps_B_T=t.unsqueeze(1),
                 crossattn_emb=context,
             )
-            action_pre = self.action_head.pre_dit(
-                action_tokens=action,
-                r=t,
-                t=t,
-                context=context,
-            )
-
-            video_seq_len = video_pre["tokens"].shape[1]
-            action_seq_len = action_pre["meta"]["seq_len"]
-            attention_mask = self.mot._build_mot_attention_mask(
-                video_seq_len=video_seq_len,
-                action_seq_len=action_seq_len,
-                video_tokens_per_frame=video_tokens_per_frame,
-                device=device,
-                num_cond_frames=self.num_cond_frames,
-                actions_per_latent=self.actions_per_latent,
-            )
-
-            tokens_out = self.mot.forward(
-                embeds_all={
-                    "video": video_pre["tokens"].view(B, video_pre["meta"]["T"], video_pre["meta"]["H"], video_pre["meta"]["W"], video_pre["meta"]["D"]),
-                    "action": action_pre["tokens_5d"],
-                },
-                attention_mask=attention_mask,
-                freqs_all={
-                    "video": video_pre["freqs"],
-                    "action": None,
-                },
-                context_all={
-                    "video": video_pre["context"],
-                    "action": action_pre["context"],
-                },
-                t_mod_all={
-                    "video": video_pre["t_mod"],
-                    "action": action_pre["t_mod"],
-                },
-            )
-
-            pred_v = self.dit.post_dit(
-                rearrange(tokens_out["video"], "b t h w d -> b (t h w) d"),
-                video_pre,
-            )
-            pred_a = self.action_head.post_dit(tokens_out["action"], action_pre)
-
             video_latents = video_latents + dt * pred_v
             video_latents[:, :, :1] = first_frame_latent.clone()
-            action = action + dt * pred_a
+
+        # Action: single-step from clean first-frame only (same as infer_action)
+        video_pre = self.dit.pre_dit(
+            x_B_C_T_H_W=first_frame_latent,
+            timesteps_B_T=torch.zeros(B, 1, device=device, dtype=first_frame_latent.dtype),
+            crossattn_emb=context,
+        )
+
+        video_seq_len = video_pre["tokens"].shape[1]
+        H_lat, W_lat = first_frame_latent.shape[3], first_frame_latent.shape[4]
+        video_tokens_per_frame = (H_lat // self.dit.patch_spatial) * (W_lat // self.dit.patch_spatial)
+
+        full_mask = self.mot._build_mot_attention_mask(
+            video_seq_len=video_seq_len,
+            action_seq_len=action_horizon,
+            video_tokens_per_frame=video_tokens_per_frame,
+            device=device,
+            num_cond_frames=self.num_cond_frames,
+            actions_per_latent=self.actions_per_latent,
+        )
+        video_self_mask = full_mask[:video_seq_len, :video_seq_len]
+
+        video_kv_cache = self.mot.prefill_video_cache(
+            video_tokens=video_pre["tokens"].view(B, video_pre["meta"]["T"], video_pre["meta"]["H"], video_pre["meta"]["W"], video_pre["meta"]["D"]),
+            video_freqs=video_pre["freqs"],
+            video_t_mod=video_pre["t_mod"],
+            video_context=video_pre["context"],
+            video_attention_mask=video_self_mask,
+        )
+
+        z_1 = torch.randn(B, action_horizon, self.action_head.action_dim, device=device, dtype=dit_dtype)
+        action_pre = self.action_head.pre_dit(
+            action_tokens=z_1,
+            r=torch.zeros(B, device=device),
+            t=torch.ones(B, device=device),
+            context=context,
+        )
+
+        action_tokens = self.mot.forward_action_with_video_cache(
+            action_tokens=action_pre["tokens_5d"],
+            action_t_mod=action_pre["t_mod"],
+            action_context=action_pre["context"],
+            video_kv_cache=video_kv_cache,
+            attention_mask=full_mask,
+            video_seq_len=video_seq_len,
+        )
+        pred = self.action_head.post_dit(action_tokens, action_pre)
+        action = z_1 - pred
 
         video_pixels = self.vae.decode(video_latents)
         return {
