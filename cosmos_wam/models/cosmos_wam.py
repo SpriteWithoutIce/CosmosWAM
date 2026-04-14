@@ -167,7 +167,7 @@ class CosmosWAM(nn.Module):
         video_t_mod_const = video_pre["t_mod"].detach()
         video_context_const = video_pre["context"].detach()
         video_freqs_const = video_pre["freqs"]
-        action_context_const = action_pre["context"].detach()
+        action_context_const = action_pre["context"].detach() if action_pre["context"] is not None else None
 
         def u_theta_fn(z, rv, tv):
             ap = self.action_head.pre_dit(z, rv, tv, context)

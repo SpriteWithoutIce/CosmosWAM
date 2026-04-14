@@ -200,7 +200,7 @@ class MoT(nn.Module):
         embeds_all: Dict[str, torch.Tensor],
         attention_mask: torch.Tensor,
         freqs_all: Dict[str, Optional[torch.Tensor]],
-        context_all: Dict[str, torch.Tensor],
+        context_all: Dict[str, Optional[torch.Tensor]],
         t_mod_all: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
         """Joint forward pass through all layers."""
@@ -339,7 +339,7 @@ class MoT(nn.Module):
         self,
         action_tokens: torch.Tensor,
         action_t_mod: torch.Tensor,
-        action_context: torch.Tensor,
+        action_context: Optional[torch.Tensor],
         video_kv_cache: List[Dict[str, torch.Tensor]],
         attention_mask: torch.Tensor,
         video_seq_len: int,
