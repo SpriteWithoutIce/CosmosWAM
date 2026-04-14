@@ -509,8 +509,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.episode_data_index = get_episode_data_index(self.meta.episodes, self.episodes)
 
         # Check timestamps
-        timestamps = torch.stack(self.hf_dataset["timestamp"]).numpy()
-        episode_indices = torch.stack(self.hf_dataset["episode_index"]).numpy()
+        # Fix: hf_dataset returns Column, need to convert to list first
+        timestamps = torch.tensor(self.hf_dataset["timestamp"]).numpy()
+        episode_indices = torch.tensor(self.hf_dataset["episode_index"]).numpy()
         ep_data_index_np = {k: t.numpy() for k, t in self.episode_data_index.items()}
         # check_timestamps_sync(timestamps, episode_indices, ep_data_index_np, self.fps, self.tolerance_s)
 
@@ -697,18 +698,33 @@ class LeRobotDataset(torch.utils.data.Dataset):
         return query_timestamps
 
     def _query_hf_dataset(self, query_indices: dict[str, list[int]]) -> dict:
-        return {
-            key: torch.stack(self.hf_dataset.select(q_idx)[key])
-            for key, q_idx in query_indices.items()
-            if key not in self.meta.video_keys
-        }
+        result = {}
+        for key, q_idx in query_indices.items():
+            if key not in self.meta.video_keys:
+                selected = self.hf_dataset.select(q_idx)[key]
+                # Convert to tensor properly
+                # Handle different data types from datasets library
+                if isinstance(selected, torch.Tensor):
+                    result[key] = selected
+                elif isinstance(selected, list):
+                    if len(selected) > 0 and isinstance(selected[0], torch.Tensor):
+                        result[key] = torch.stack(selected)
+                    else:
+                        result[key] = torch.tensor(selected)
+                elif hasattr(selected, 'to_numpy'):
+                    result[key] = torch.from_numpy(selected.to_numpy())
+                elif hasattr(selected, 'tolist'):
+                    result[key] = torch.tensor(selected.tolist())
+                else:
+                    result[key] = torch.tensor(selected)
+        return result
 
     def _query_hf_dataset_fast(self, query_indices: dict[str, list[int]]) -> dict:
         result = {}
         processed_indices = set()
         index_to_selected = {}
         for key, q_idx in query_indices.items():
-            if key not in self.meta.video_keys :
+            if key not in self.meta.video_keys:
                 if 'images' in key and not self.during_training:
                     continue
                 q_idx_tuple = tuple(q_idx)
@@ -718,7 +734,33 @@ class LeRobotDataset(torch.utils.data.Dataset):
                     processed_indices.add(q_idx_tuple)
                 else:
                     selected_data = index_to_selected[q_idx_tuple]
-                result[key] = torch.stack(selected_data[key])
+                # Fix: Convert Column to tensor properly
+                selected = selected_data[key]
+                # Handle different data types from datasets library
+                if isinstance(selected, torch.Tensor):
+                    # Already a tensor
+                    result[key] = selected
+                elif isinstance(selected, list):
+                    # List of tensors or scalars
+                    if len(selected) > 0 and isinstance(selected[0], torch.Tensor):
+                        result[key] = torch.stack(selected)
+                    else:
+                        result[key] = torch.tensor(selected)
+                elif hasattr(selected, 'to_numpy'):
+                    # datasets Column with numpy conversion
+                    result[key] = torch.from_numpy(selected.to_numpy())
+                elif hasattr(selected, 'tolist'):
+                    # Convert to list first
+                    result[key] = torch.tensor(selected.tolist())
+                else:
+                    # Debug: print type information
+                    print(f"[DEBUG] key={key}, type={type(selected)}, value={selected}")
+                    # Last resort - try numpy array first
+                    import numpy as np
+                    if isinstance(selected, np.ndarray):
+                        result[key] = torch.from_numpy(selected)
+                    else:
+                        result[key] = torch.tensor(selected)
         return result
     
     # no videos
@@ -726,10 +768,26 @@ class LeRobotDataset(torch.utils.data.Dataset):
         ep_start = self.episode_data_index["from"][episode_id].item()
         ep_end = self.episode_data_index["to"][episode_id].item()
         q_idx = list(range(ep_start, ep_end))
-        # selected_data = self.hf_dataset.select(q_idx)
         selected_data = self.hf_dataset[q_idx]
         res_keys = self.meta.features.keys() - set(self.meta.video_keys)
-        res = {key : torch.stack(selected_data[key]) for key in res_keys}
+        # Fix: Convert Column to tensor properly
+        res = {}
+        for key in res_keys:
+            selected = selected_data[key]
+            # Handle different data types from datasets library
+            if isinstance(selected, torch.Tensor):
+                res[key] = selected
+            elif isinstance(selected, list):
+                if len(selected) > 0 and isinstance(selected[0], torch.Tensor):
+                    res[key] = torch.stack(selected)
+                else:
+                    res[key] = torch.tensor(selected)
+            elif hasattr(selected, 'to_numpy'):
+                res[key] = torch.from_numpy(selected.to_numpy())
+            elif hasattr(selected, 'tolist'):
+                res[key] = torch.tensor(selected.tolist())
+            else:
+                res[key] = torch.tensor(selected)
         return res
 
     def _query_videos(self, query_timestamps: dict[str, list[float]], ep_idx: int) -> dict[str, torch.Tensor]:

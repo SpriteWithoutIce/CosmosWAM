@@ -180,12 +180,13 @@ class MoT(nn.Module):
         attn_out = rearrange(attn_out, "b (t h w) d -> b t h w d", t=T, h=H, w=W)
         x = residual_x + gate_sa * attn_out
 
-        # cross-attn
-        norm_x = modulate(block.norm3(x), scale_ca, shift_ca)
-        norm_x_flat = rearrange(norm_x, "b t h w d -> b (t h w) d")
-        cross_out = block.cross_attn(norm_x_flat, context=context)
-        cross_out = rearrange(cross_out, "b (t h w) d -> b t h w d", t=T, h=H, w=W)
-        x = x + gate_ca * cross_out
+        # cross-attn (only if block has cross_attn attribute, e.g., full Block)
+        if hasattr(block, 'cross_attn'):
+            norm_x = modulate(block.norm3(x), scale_ca, shift_ca)
+            norm_x_flat = rearrange(norm_x, "b t h w d -> b (t h w) d")
+            cross_out = block.cross_attn(norm_x_flat, context=context)
+            cross_out = rearrange(cross_out, "b (t h w) d -> b t h w d", t=T, h=H, w=W)
+            x = x + gate_ca * cross_out
 
         # mlp
         norm_x = modulate(block.norm2(x), scale_mlp, shift_mlp)
