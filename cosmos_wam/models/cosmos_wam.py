@@ -127,30 +127,11 @@ class CosmosWAM(nn.Module):
             actions_per_latent=self.actions_per_latent,
         )
 
-        # Single MoT forward for both branches
-        tokens_out = self.mot.forward(
-            embeds_all={
-                "video": video_pre["tokens"].view(B, video_pre["meta"]["T"], video_pre["meta"]["H"], video_pre["meta"]["W"], video_pre["meta"]["D"]),
-                "action": action_pre["tokens_5d"],
-            },
-            attention_mask=attention_mask,
-            freqs_all={
-                "video": video_pre["freqs"],
-                "action": None,
-            },
-            context_all={
-                "video": video_pre["context"],
-                "action": action_pre["context"],
-            },
-            t_mod_all={
-                "video": video_pre["t_mod"],
-                "action": action_pre["t_mod"],
-            },
-        )
-
-        pred_v = self.dit.post_dit(
-            rearrange(tokens_out["video"], "b t h w d -> b (t h w) d"),
-            video_pre,
+        # Video prediction: can run directly through self.dit since video doesn't see action
+        pred_v = self.dit(
+            x_B_C_T_H_W=noisy_latents,
+            timesteps_B_T=t_video.unsqueeze(1).to(dtype=dtype),
+            crossattn_emb=context,
         )
 
         target_v = latents - noise_v
@@ -159,15 +140,13 @@ class CosmosWAM(nn.Module):
         else:
             loss_video = F.mse_loss(pred_v, target_v[:, :16])
 
-        # Define u_theta for action branch (re-runs action pre_dit + mot action slice + post_dit)
-        # Video input tokens are treated as constants (use original pre_dit tokens, not mot output)
+        # Action iMF: define u_theta using cached video tokens as constants
         video_tokens_const = video_pre["tokens"].view(
             B, video_pre["meta"]["T"], video_pre["meta"]["H"], video_pre["meta"]["W"], video_pre["meta"]["D"]
         ).detach()
         video_t_mod_const = video_pre["t_mod"].detach()
         video_context_const = video_pre["context"].detach()
         video_freqs_const = video_pre["freqs"]
-        action_context_const = action_pre["context"].detach() if action_pre["context"] is not None else None
 
         def u_theta_fn(z, rv, tv):
             ap = self.action_head.pre_dit(z, rv, tv, context)
