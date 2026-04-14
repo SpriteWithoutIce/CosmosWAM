@@ -14,9 +14,10 @@ Usage:
 
     # Multiple datasets (like FastWAM)
     python scripts/precompute_text_embeds.py \
-        --dataset_dir /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_10_no_noops_lerobot /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_goal_no_noops_lerobot /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_object_no_noops_lerobot /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot \
-        --output_dir /home/jwhe/linyihan/datasets/text_embeds_cache/libero \
-        --model_path /home/jwhe/linyihan/CKPT/Cosmos-Reason1-7B \
+        --dataset_dir /mnt/data/linyihan/datasets/libero_10_no_noops_lerobot /mnt/data/linyihan/datasets/libero_goal_no_noops_lerobot /mnt/data/linyihan/datasets/libero_object_no_noops_lerobot /mnt/data/linyihan/datasets/libero_spatial_no_noops_lerobot \
+        --output_dir /mnt/data/linyihan/datasets/text_embeds_cache/libero \
+        --model_path /mnt/data/linyihan/Cosmos-Reason1-7b \
+        --use_prompt_template True \
         --context_len 128
 
     # Multi-GPU

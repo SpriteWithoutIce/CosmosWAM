@@ -2,11 +2,11 @@ output_dir: ./outputs/cosmos_2b_libero
 seed: 42
 
 model:
-  dit_checkpoint: /home/jwhe/linyihan/CKPT/cosmos/81edfebe-bd6a-4039-8c1d-737df1a790bf_ema_bf16.pt
-  vae_checkpoint: /home/jwhe/linyihan/CKPT/cosmos/tokenizer.pth
+  dit_checkpoint: /mnt/data/linyihan/ckpt/cosmos_base/81edfebe-bd6a-4039-8c1d-737df1a790bf_ema_bf16.pt
+  vae_checkpoint: /mnt/data/linyihan/ckpt/cosmos_base/tokenizer.pth
   load_vae_weights: true
   enable_gradient_checkpointing: true
-  compile: false                          # H100 使用 torch.compile 加速
+  compile: false
   lambda_action: 1.0
   num_cond_frames: 1
   vae_temporal_window: 16
@@ -38,7 +38,7 @@ model:
 
   action_head:
     action_dim: 7
-    hidden_dim: 1024
+    hidden_dim: 2048
     num_layers: 28
     num_heads: 16
     video_dim: 2048
@@ -50,10 +50,10 @@ data:
     _target_: cosmos_wam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
     # LIBERO 4 suites
     dataset_dirs:
-      - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot
-      - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_object_no_noops_lerobot
-      - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_goal_no_noops_lerobot
-      - /home/jwhe/linyihan/datasets/libero_mujoco3.3.2/libero_10_no_noops_lerobot
+      - /mnt/data/linyihan/datasets/libero_spatial_no_noops_lerobot
+      - /mnt/data/linyihan/datasets/libero_object_no_noops_lerobot
+      - /mnt/data/linyihan/datasets/libero_goal_no_noops_lerobot
+      - /mnt/data/linyihan/datasets/libero_10_no_noops_lerobot
     shape_meta:
       images:
         - key: image          # Only agentview (main camera)
@@ -102,17 +102,16 @@ data:
         - _target_: cosmos_wam.datasets.lerobot.transforms.image.ToTensor
         - _target_: torchvision.transforms.Resize
           size: [224, 224]
-    text_embedding_cache_dir: /home/jwhe/linyihan/datasets/text_embeds_cache/libero
+    text_embedding_cache_dir: /mnt/data/linyihan/datasets/text_embeds_cache/libero
     context_len: 128
     use_text_prompt_template: true
-    pretrained_norm_stats: /home/jwhe/linyihan/CosmosWAM/datasets_stats/libero_dataset_stats.json
 
 trainer:
   output_dir: ${output_dir}
   learning_rate: 1.0e-4
   action_learning_rate: 1.0e-4
   weight_decay: 1.0e-2
-  batch_size: 32
+  batch_size: 1
   num_workers: 16
   num_epochs: 10
   max_steps: null
@@ -123,8 +122,7 @@ trainer:
   max_grad_norm: 1.0
   seed: ${seed}
   resume: false
-  resume_from_checkpoint: /home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260410_122224/checkpoints/step_0015000.pt
-  resume_reset_step: true       # true: 加载权重但从 step=0 开始计数；false: 恢复 step 和 epoch
+  resume_reset_step: true
   mixed_precision: "bf16"
   
   lr_schedule: "cosine"

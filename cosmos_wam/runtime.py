@@ -161,6 +161,38 @@ def run_training(cfg: DictConfig):
         actions_per_latent=cfg.model.action_head.get("actions_per_latent", 8),
     )
 
+    # 5.4 Print model size summary
+    def count_params(module):
+        return sum(p.numel() for p in module.parameters())
+    
+    def count_trainable(module):
+        return sum(p.numel() for p in module.parameters() if p.requires_grad)
+    
+    print("\n" + "="*60)
+    print("Model Parameter Summary")
+    print("="*60)
+    
+    # Video model (DiT)
+    dit_params = count_params(model.dit)
+    dit_trainable = count_trainable(model.dit)
+    print(f"Video Model (DiT):        {dit_params/1e9:>8.3f}B params  (trainable: {dit_trainable/1e9:>8.3f}B)")
+    
+    # Action head
+    action_params = count_params(model.action_head)
+    action_trainable = count_trainable(model.action_head)
+    print(f"Action Head:              {action_params/1e9:>8.3f}B params  (trainable: {action_trainable/1e9:>8.3f}B)")
+    
+    # VAE (frozen)
+    vae_params = count_params(model.vae)
+    print(f"VAE (frozen):             {vae_params/1e9:>8.3f}B params")
+    
+    # Total
+    total_params = count_params(model)
+    total_trainable = count_trainable(model)
+    print("-"*60)
+    print(f"Total:                    {total_params/1e9:>8.3f}B params  (trainable: {total_trainable/1e9:>8.3f}B)")
+    print("="*60 + "\n")
+    
     # 5.5 Compile model with torch.compile for H100 optimization
     if cfg.model.get("compile", False):
         print("[runtime] Compiling model with torch.compile (mode='max-autotune')...")
