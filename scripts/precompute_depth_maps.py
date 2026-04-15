@@ -118,6 +118,10 @@ def main():
         video_paths = sorted(glob.glob(video_pattern))
 
         print(f"Processing dataset: {ds_name} ({len(video_paths)} videos)")
+        # ========== 修改1：为当前数据集创建子目录 ==========
+        ds_outdir = os.path.join(args.outdir, ds_name)
+        os.makedirs(ds_outdir, exist_ok=True)
+
         for video_path in tqdm(video_paths, desc=f"Depth ({ds_name})"):
             try:
                 frames = read_video_robust(video_path)
@@ -141,7 +145,7 @@ def main():
                 # fallback: strip non-digit prefix/suffix if possible
                 ep_idx = int(''.join(filter(str.isdigit, ep_name)))
             out_name = f"{ds_name}_episode_{ep_idx:06d}_depth.npy"
-            np.save(os.path.join(args.outdir, out_name), depths)
+            np.save(os.path.join(ds_outdir, out_name), depths)
 
     print(f"Done! Saved depth maps to {args.outdir}")
 
