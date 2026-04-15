@@ -200,6 +200,7 @@ class ActionHeadIMF(nn.Module):
         self.action_dim = action_dim
         self.action_horizon = action_horizon
         self.num_layers = num_layers
+        self.gradient_checkpointing = False
 
         # Encoders
         self.state_encoder = StateEncoder(state_dim, hidden_dim)

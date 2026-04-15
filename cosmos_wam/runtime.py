@@ -106,6 +106,12 @@ def run_training(cfg: DictConfig):
         num_cond_frames=cfg.model.get("num_cond_frames", 1),
     )
 
+    # Enable gradient checkpointing if configured
+    if cfg.model.get("enable_gradient_checkpointing", False):
+        model.dit.gradient_checkpointing = True
+        model.action_head.gradient_checkpointing = True
+        print("[runtime] Gradient checkpointing enabled for DiT and ActionHeadIMF")
+
     # 7. Build Datasets
     train_dataset = instantiate(cfg.data.train)
     val_dataset = instantiate(cfg.data.get("val", None)) if "val" in cfg.data else None

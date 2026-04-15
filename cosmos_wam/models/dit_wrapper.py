@@ -731,6 +731,7 @@ class MiniTrainDIT(nn.Module):
             adaln_lora_dim=adaln_lora_dim,
         )
 
+        self.gradient_checkpointing = False
         self.use_crossattn_projection = use_crossattn_projection
         if use_crossattn_projection:
             # Cosmos checkpoint uses Sequential: crossattn_proj.0 (Linear), crossattn_proj.1 (activation)
@@ -823,12 +824,22 @@ class MiniTrainDIT(nn.Module):
             # Architecture: Layers 1-24 standard, 25-28 with latent query
             num_standard_layers = self.num_blocks - 4
             for i in range(num_standard_layers):
-                x_B_T_H_W_D = self.blocks[i](
-                    x_B_T_H_W_D,
-                    t_embedding_B_T_D,
-                    crossattn_emb,
-                    rope_emb_L_1_1_D=rope_emb_L_1_1_D,
-                )
+                if self.gradient_checkpointing:
+                    x_B_T_H_W_D = torch.utils.checkpoint.checkpoint(
+                        self.blocks[i],
+                        x_B_T_H_W_D,
+                        t_embedding_B_T_D,
+                        crossattn_emb,
+                        rope_emb_L_1_1_D,
+                        use_reentrant=False,
+                    )
+                else:
+                    x_B_T_H_W_D = self.blocks[i](
+                        x_B_T_H_W_D,
+                        t_embedding_B_T_D,
+                        crossattn_emb,
+                        rope_emb_L_1_1_D=rope_emb_L_1_1_D,
+                    )
 
             # Layers 25-28: flatten and concat latent query
             x_flat = rearrange(x_B_T_H_W_D, "b t h w d -> b (t h w) d")
@@ -860,13 +871,24 @@ class MiniTrainDIT(nn.Module):
             attn_mask[video_tokens:, video_tokens:] = 0.0
 
             for i in range(num_standard_layers, self.num_blocks):
-                x_all = self.blocks[i](
-                    x_all,
-                    emb_all,
-                    crossattn_emb,
-                    rope_emb_L_1_1_D=None,
-                    attention_mask=attn_mask,
-                )
+                if self.gradient_checkpointing:
+                    x_all = torch.utils.checkpoint.checkpoint(
+                        self.blocks[i],
+                        x_all,
+                        emb_all,
+                        crossattn_emb,
+                        None,
+                        attn_mask,
+                        use_reentrant=False,
+                    )
+                else:
+                    x_all = self.blocks[i](
+                        x_all,
+                        emb_all,
+                        crossattn_emb,
+                        rope_emb_L_1_1_D=None,
+                        attention_mask=attn_mask,
+                    )
 
             # Split outputs
             cond_hidden = x_all[:, :cond_tokens]
@@ -875,20 +897,32 @@ class MiniTrainDIT(nn.Module):
 
             # Final layer only on noisy tokens
             noisy_hidden_5d = noisy_hidden.view(B, T - num_cond_frames, H, W, D)
+            # t_embedding may have temporal dim 1 in training; broadcast to match noisy frames
+            t_emb_noisy = t_embedding_B_T_D[:, :1, :].expand(-1, noisy_hidden_5d.shape[1], -1)
             x_B_T_H_W_O = self.final_layer(
-                noisy_hidden_5d, t_embedding_B_T_D[:, num_cond_frames:, :]
+                noisy_hidden_5d, t_emb_noisy
             )
             pred_v = self.unpatchify(x_B_T_H_W_O)
             return pred_v, cond_hidden, noisy_hidden, query_hidden
         else:
             intermediate_features = []
             for i, block in enumerate(self.blocks):
-                x_B_T_H_W_D = block(
-                    x_B_T_H_W_D,
-                    t_embedding_B_T_D,
-                    crossattn_emb,
-                    rope_emb_L_1_1_D=rope_emb_L_1_1_D,
-                )
+                if self.gradient_checkpointing:
+                    x_B_T_H_W_D = torch.utils.checkpoint.checkpoint(
+                        block,
+                        x_B_T_H_W_D,
+                        t_embedding_B_T_D,
+                        crossattn_emb,
+                        rope_emb_L_1_1_D,
+                        use_reentrant=False,
+                    )
+                else:
+                    x_B_T_H_W_D = block(
+                        x_B_T_H_W_D,
+                        t_embedding_B_T_D,
+                        crossattn_emb,
+                        rope_emb_L_1_1_D=rope_emb_L_1_1_D,
+                    )
                 if intermediate_feature_ids and i in intermediate_feature_ids:
                     feat = rearrange(x_B_T_H_W_D, "b t h w d -> b (t h w) d")
                     intermediate_features.append(feat)
