@@ -257,8 +257,12 @@ class ActionHeadIMF(nn.Module):
         B = actions.shape[0]
         device = actions.device
 
-        # iMF with jvp is unstable under bf16 autocast due to PyTorch functorch limitations.
-        # ActionHead is only ~180M params, so we compute iMF loss in fp32 for numerical stability.
+        # iMF with jvp is unstable under bf16 due to PyTorch functorch limitations.
+        # ActionHead is only ~180M params, so we compute iMF loss in fp32.
+        original_dtype = next(self.parameters()).dtype
+        if original_dtype != torch.float32:
+            self.float()
+
         actions_f = actions.float()
         video_ctx_f = video_ctx.float()
         state_f = state.float()
@@ -270,8 +274,7 @@ class ActionHeadIMF(nn.Module):
         z_t = (1.0 - t[:, None, None]) * actions_f + t[:, None, None] * noise
 
         def fn(z, r_in, t_in):
-            with torch.autocast(device_type=actions.device.type, enabled=False):
-                return self._forward_once(video_ctx_f, state_f, depth_f, z, r_in, t_in)
+            return self._forward_once(video_ctx_f, state_f, depth_f, z, r_in, t_in)
 
         # v_theta at (z_t, t, t)
         v_theta = fn(z_t, t, t)
@@ -288,6 +291,9 @@ class ActionHeadIMF(nn.Module):
         # Loss
         target = noise - actions_f
         loss = F.mse_loss(V, target)
+
+        if original_dtype != torch.float32:
+            self.to(original_dtype)
         return loss
 
     @torch.no_grad()
