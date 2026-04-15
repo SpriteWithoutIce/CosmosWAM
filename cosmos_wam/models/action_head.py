@@ -130,13 +130,13 @@ class ActionEncoderIMF(nn.Module):
 
 
 class ActionDiTBlock(nn.Module):
-    def __init__(self, hidden_dim, num_heads, cross_attention_dim=None, is_self_attn=False):
+    def __init__(self, hidden_dim, num_heads, cross_attention_dim=None, is_self_attn=False, dropout=0.0, final_dropout=False):
         super().__init__()
         self.is_self_attn = is_self_attn
         self.adaln = AdaLayerNorm(hidden_dim)
 
         if is_self_attn:
-            self.attn = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True)
+            self.attn = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True, dropout=dropout)
         else:
             cross_dim = cross_attention_dim if cross_attention_dim is not None else hidden_dim
             self.attn = nn.MultiheadAttention(
@@ -145,13 +145,16 @@ class ActionDiTBlock(nn.Module):
                 kdim=cross_dim,
                 vdim=cross_dim,
                 batch_first=True,
+                dropout=dropout,
             )
 
         self.norm_ffn = nn.LayerNorm(hidden_dim)
         self.ffn = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim * 4),
             nn.GELU(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
             nn.Linear(hidden_dim * 4, hidden_dim),
+            nn.Dropout(dropout) if final_dropout else nn.Identity(),
         )
 
     def forward(self, x, video_ctx, time_emb):
