@@ -438,9 +438,11 @@ class CosmosWAMTrainer:
         full_state = unwrapped.state_dict()
         filtered_state = {k: v for k, v in full_state.items() if not k.startswith("vae.")}
         
-        # Convert to bf16 to save space (matching original Cosmos checkpoint format)
-        filtered_state_bf16 = {k: v.to(torch.bfloat16) if v.dtype == torch.float32 else v 
-                               for k, v in filtered_state.items()}
+        # Convert to bf16 to save space, but preserve action_head in fp32 (jvp stability)
+        filtered_state_bf16 = {
+            k: v.to(torch.bfloat16) if (v.dtype == torch.float32 and not k.startswith("action_head.")) else v
+            for k, v in filtered_state.items()
+        }
         
         state = {
             "model": filtered_state_bf16,
@@ -488,6 +490,11 @@ class CosmosWAMTrainer:
         
         # Load model state directly (called before accelerator.prepare(), so model is not wrapped yet)
         missing, unexpected = self.model.load_state_dict(checkpoint["model"], strict=False)
+
+        # Ensure action_head stays fp32 (checkpoints may have saved it as bf16)
+        if next(self.model.action_head.parameters()).dtype != torch.float32:
+            self.model.action_head = self.model.action_head.float()
+            logger.info("ActionHeadIMF cast back to float32 after loading checkpoint")
         
         logger.info("load_state_dict result: missing=%d, unexpected=%d", len(missing), len(unexpected))
         if missing:

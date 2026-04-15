@@ -257,24 +257,13 @@ class ActionHeadIMF(nn.Module):
         B = actions.shape[0]
         device = actions.device
 
-        # iMF with jvp is unstable under bf16 due to PyTorch functorch limitations.
-        # ActionHead is only ~180M params, so we compute iMF loss in fp32.
-        original_dtype = next(self.parameters()).dtype
-        if original_dtype != torch.float32:
-            self.float()
-
-        actions_f = actions.float()
-        video_ctx_f = video_ctx.float()
-        state_f = state.float()
-        depth_f = depth.float()
-
         t = torch.rand(B, device=device, dtype=torch.float32)
         r = torch.rand(B, device=device, dtype=torch.float32)
-        noise = torch.randn_like(actions_f)
-        z_t = (1.0 - t[:, None, None]) * actions_f + t[:, None, None] * noise
+        noise = torch.randn_like(actions)
+        z_t = (1.0 - t[:, None, None]) * actions + t[:, None, None] * noise
 
         def fn(z, r_in, t_in):
-            return self._forward_once(video_ctx_f, state_f, depth_f, z, r_in, t_in)
+            return self._forward_once(video_ctx, state, depth, z, r_in, t_in)
 
         # v_theta at (z_t, t, t)
         v_theta = fn(z_t, t, t)
@@ -289,11 +278,8 @@ class ActionHeadIMF(nn.Module):
         V = u + (t - r)[:, None, None] * dudt.detach()
 
         # Loss
-        target = noise - actions_f
+        target = noise - actions
         loss = F.mse_loss(V, target)
-
-        if original_dtype != torch.float32:
-            self.to(original_dtype)
         return loss
 
     @torch.no_grad()
@@ -301,8 +287,13 @@ class ActionHeadIMF(nn.Module):
         """Inference: one-step sampling"""
         B = state.shape[0]
         device = state.device
-        z_1 = torch.randn(B, self.action_horizon, self.action_dim, device=device, dtype=state.dtype)
+        target_dtype = next(self.parameters()).dtype
 
+        video_ctx = video_ctx.to(dtype=target_dtype)
+        state = state.to(dtype=target_dtype)
+        depth = depth.to(dtype=target_dtype)
+
+        z_1 = torch.randn(B, self.action_horizon, self.action_dim, device=device, dtype=target_dtype)
         r = torch.zeros(B, device=device, dtype=torch.float32)
         t = torch.ones(B, device=device, dtype=torch.float32)
 

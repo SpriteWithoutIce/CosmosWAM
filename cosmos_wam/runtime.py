@@ -106,13 +106,16 @@ def run_training(cfg: DictConfig):
         num_cond_frames=cfg.model.get("num_cond_frames", 1),
     )
 
+    # ActionHeadIMF uses torch.func.jvp which is fundamentally incompatible with bf16
+    # in PyTorch functorch. Keep it permanently in fp32.
+    if next(model.action_head.parameters()).dtype != torch.float32:
+        model.action_head = model.action_head.float()
+        print("[runtime] ActionHeadIMF switched to float32 for jvp stability")
+
     # Enable gradient checkpointing if configured
     if cfg.model.get("enable_gradient_checkpointing", False):
         model.dit.gradient_checkpointing = True
-        # NOTE: ActionHeadIMF uses torch.func.jvp (iMF loss), which is incompatible
-        # with torch.utils.checkpoint. ActionHead is only ~180M params, so we only
-        # checkpoint the large DiT (~2B params).
-        print("[runtime] Gradient checkpointing enabled for DiT only (ActionHeadIMF disabled due to jvp incompatibility)")
+        print("[runtime] Gradient checkpointing enabled for DiT")
 
     # 7. Build Datasets
     train_dataset = instantiate(cfg.data.train)
