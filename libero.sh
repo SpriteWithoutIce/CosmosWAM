@@ -17,7 +17,7 @@ DATASET_STATS="/home/jwhe/linyihan/CosmosWAM/outputs/dataset_stats.json"
 export LIBERO_PATH="${LIBERO_PATH:-/home/jwhe/linyihan/LIBERO}"
 
 # 固定配置
-TASK_SUITE="libero_goal"
+TASK_SUITE="libero_10"
 NUM_TRIALS=10
 NUM_INFERENCE_STEPS=20
 REPLAN_STEPS=4
