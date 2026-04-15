@@ -79,7 +79,7 @@ class CosmosWAM(nn.Module):
             "target_trajectory": target_trajectory,
         }
 
-    def training_loss(self, sample: Dict[str, Any]) -> tuple[torch.Tensor, Dict[str, float]]:
+    def training_loss(self, sample: Dict[str, Any], action_head_train: Optional[ActionHeadIMF] = None) -> tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         inputs = self.build_inputs(sample)
         latents = inputs["latents"]
         action = inputs["action"]
@@ -123,14 +123,15 @@ class CosmosWAM(nn.Module):
 
         # -------- Action iMF Loss --------
         video_ctx = torch.cat([cond_hidden, query_hidden], dim=1).detach()
-        loss_action = self.action_head(video_ctx, state, depth_map, action)
+        aht = action_head_train if action_head_train is not None else self.action_head
+        loss_action = aht(video_ctx, state, depth_map, action)
 
         loss = loss_video + self.lambda_traj * loss_traj + self.lambda_action * loss_action
         return loss, {
-            "loss_video": loss_video.detach(),
-            "loss_traj": loss_traj.detach(),
-            "loss_action": loss_action.detach(),
-            "loss_total": loss.detach(),
+            "loss_video": loss_video,
+            "loss_traj": loss_traj,
+            "loss_action": loss_action,
+            "loss_total": loss,
         }
 
     @torch.no_grad()
@@ -185,7 +186,7 @@ class CosmosWAM(nn.Module):
 
         video_ctx = torch.cat([cond_hidden, query_hidden], dim=1)
 
-        # Action head one-step prediction
+        # Action head one-step prediction (use main action_head, may be bf16 for inference)
         action = self.action_head.predict_action(
             video_ctx, state.to(dtype=dtype), wrist_depth.to(dtype=dtype)
         )
