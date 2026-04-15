@@ -12,6 +12,71 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+try:
+    import av
+    HAS_AV = True
+except ImportError:
+    HAS_AV = False
+
+try:
+    from decord import VideoReader, cpu
+    HAS_DECORD = True
+except ImportError:
+    HAS_DECORD = False
+
+
+def read_video_av(video_path):
+    """使用 PyAV 读取视频，支持 AV1 等编码"""
+    container = av.open(video_path)
+    frames = []
+    stream = container.streams.video[0]
+    for frame in container.decode(video=0):
+        img = frame.to_ndarray(format='bgr24')
+        frames.append(img)
+    container.close()
+    if len(frames) == 0:
+        raise RuntimeError(f"无法读取视频: {video_path}")
+    return frames
+
+
+def read_video_decord(video_path):
+    """使用 decord 读取视频"""
+    vr = VideoReader(video_path, ctx=cpu(0))
+    frames = vr.get_batch(range(len(vr))).asnumpy()
+    # decord 默认返回 RGB，转成 BGR 以和 OpenCV 行为一致
+    frames = [cv2.cvtColor(f, cv2.COLOR_RGB2BGR) for f in frames]
+    return frames
+
+
+def read_video_cv2_fallback(video_path):
+    """使用 cv2 读取视频（备用方案）"""
+    cap = cv2.VideoCapture(video_path)
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(frame)
+    cap.release()
+    if len(frames) == 0:
+        raise RuntimeError(f"无法读取视频: {video_path}")
+    return frames
+
+
+def read_video_robust(video_path):
+    """优先用 PyAV，其次 decord，最后 cv2 fallback"""
+    if HAS_AV:
+        try:
+            return read_video_av(video_path)
+        except Exception as e:
+            print(f"PyAV 读取失败 ({e}), 尝试 decord...")
+    if HAS_DECORD:
+        try:
+            return read_video_decord(video_path)
+        except Exception as e:
+            print(f"decord 读取失败 ({e}), 尝试 cv2...")
+    return read_video_cv2_fallback(video_path)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Precompute depth maps for wrist videos")
@@ -54,17 +119,10 @@ def main():
 
         print(f"Processing dataset: {ds_name} ({len(video_paths)} videos)")
         for video_path in tqdm(video_paths, desc=f"Depth ({ds_name})"):
-            cap = cv2.VideoCapture(video_path)
-            frames = []
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frames.append(frame)
-            cap.release()
-
-            if len(frames) == 0:
-                print(f"Warning: empty video {video_path}")
+            try:
+                frames = read_video_robust(video_path)
+            except Exception as e:
+                print(f"Warning: failed to read video {video_path}: {e}")
                 continue
 
             depths = []
