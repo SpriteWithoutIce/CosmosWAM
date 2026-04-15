@@ -240,39 +240,34 @@ class ActionHeadIMF(nn.Module):
         self.proj_out_2 = nn.Linear(hidden_dim, action_dim)
 
     def _forward_once(self, video_ctx, state, depth, noisy_action, r, t):
-        print(f"[ActionHeadIMF DEBUG] _forward_once shapes: video_ctx={video_ctx.shape}, state={state.shape}, depth={depth.shape}, noisy_action={noisy_action.shape}, r={r.shape}, t={t.shape}")
         state_tokens = self.state_encoder(state)          # [B, 1, D]
         depth_tokens = self.depth_encoder(depth)          # [B, 16, D]
         action_tokens = self.action_encoder(noisy_action, r, t)  # [B, T, D]
-        print(f"[ActionHeadIMF DEBUG] encoded tokens: state_tokens={state_tokens.shape}, depth_tokens={depth_tokens.shape}, action_tokens={action_tokens.shape}")
 
         x = torch.cat([state_tokens, depth_tokens, action_tokens], dim=1)  # [B, 49, D]
-        print(f"[ActionHeadIMF DEBUG] concatenated x={x.shape}")
 
         video_ctx_proj = self.video_ctx_proj(video_ctx)   # [B, 424, D]
-        print(f"[ActionHeadIMF DEBUG] video_ctx_proj={video_ctx_proj.shape}")
 
         time_emb = self.time_proj(self.time_embed(t - r).to(dtype=next(self.time_proj.parameters()).dtype))  # [B, D]
 
-        for i, block in enumerate(self.blocks):
+        for block in self.blocks:
             x = block(x, video_ctx_proj, time_emb)
-            print(f"[ActionHeadIMF DEBUG] after block {i}: x={x.shape}")
 
         # GR00T-style adaptive output normalization
         shift, scale = self.proj_out_1(F.silu(time_emb)).chunk(2, dim=-1)
         x = self.norm_out(x) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
         pred = self.proj_out_2(x[:, -self.action_horizon:])  # [B, T, action_dim]
-        print(f"[ActionHeadIMF DEBUG] output pred={pred.shape}")
         return pred
 
     def forward(self, video_ctx, state, depth, actions):
         """Training: iMF loss"""
         B = actions.shape[0]
         device = actions.device
+        target_dtype = actions.dtype
 
-        # Sample times uniformly
-        t = torch.rand(B, device=device, dtype=torch.float32)
-        r = torch.rand(B, device=device, dtype=torch.float32)
+        # Sample times uniformly (match action dtype for jvp compatibility)
+        t = torch.rand(B, device=device, dtype=target_dtype)
+        r = torch.rand(B, device=device, dtype=target_dtype)
 
         # Construct noisy trajectory
         noise = torch.randn_like(actions)
@@ -303,12 +298,10 @@ class ActionHeadIMF(nn.Module):
         """Inference: one-step sampling"""
         B = state.shape[0]
         device = state.device
-        print(f"[ActionHeadIMF DEBUG] predict_action: B={B}, video_ctx={video_ctx.shape}, state={state.shape}, depth={depth.shape}")
         z_1 = torch.randn(B, self.action_horizon, self.action_dim, device=device, dtype=state.dtype)
 
         r = torch.zeros(B, device=device, dtype=torch.float32)
         t = torch.ones(B, device=device, dtype=torch.float32)
 
         u = self._forward_once(video_ctx, state, depth, z_1, r, t)
-        print(f"[ActionHeadIMF DEBUG] predict_action output: z_1={z_1.shape}, u={u.shape}")
         return z_1 - u
