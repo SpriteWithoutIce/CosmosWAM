@@ -252,7 +252,7 @@ class ActionHeadIMF(nn.Module):
         video_ctx_proj = self.video_ctx_proj(video_ctx)   # [B, 424, D]
         print(f"[ActionHeadIMF DEBUG] video_ctx_proj={video_ctx_proj.shape}")
 
-        time_emb = self.time_proj(self.time_embed(t - r))  # [B, D]
+        time_emb = self.time_proj(self.time_embed(t - r).to(dtype=next(self.time_proj.parameters()).dtype))  # [B, D]
 
         for i, block in enumerate(self.blocks):
             x = block(x, video_ctx_proj, time_emb)
