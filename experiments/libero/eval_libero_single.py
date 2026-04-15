@@ -364,7 +364,7 @@ def run_single_episode(
 ) -> tuple[bool, list]:
     """Run a single episode."""
     max_steps = {
-        "libero_spatial": 500,
+        "libero_spatial": 400,
         "libero_object": 400,
         "libero_goal": 400,
         "libero_10": 700,
@@ -372,7 +372,7 @@ def run_single_episode(
     }.get(cfg.EVALUATION.task_suite_name, 400)
     
     replan_steps = int(cfg.EVALUATION.get("replan_steps", 5))
-    num_steps_wait = int(cfg.EVALUATION.get("num_steps_wait", 5))
+    num_steps_wait = int(cfg.EVALUATION.get("num_steps_wait", 10))
 
     env.reset()
     obs = env.set_init_state(initial_state)
