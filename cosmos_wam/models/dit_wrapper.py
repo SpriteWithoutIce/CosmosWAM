@@ -836,7 +836,7 @@ class MiniTrainDIT(nn.Module):
 
             # Expand timestep embedding to match all tokens
             emb_flat = rearrange(
-                t_embedding_B_T_D.unsqueeze(2).unsqueeze(3).expand(-1, -1, H, W, -1),
+                t_embedding_B_T_D[:, :1, :].unsqueeze(2).unsqueeze(3).expand(-1, T, H, W, -1),
                 "b t h w d -> b (t h w) d",
             )
             num_query = latent_query_tokens.shape[1]
