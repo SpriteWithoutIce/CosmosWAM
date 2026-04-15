@@ -592,7 +592,7 @@ def eval_single_process(cfg: DictConfig):
 
     logging.info("Running LIBERO evaluation for suite: %s", cfg.EVALUATION.task_suite_name)
 
-    for task_id in range(4,10):
+    for task_id in range(10):
         print("task_id: ", task_id)
         task = task_suite.get_task(task_id)
         initial_states = task_suite.get_task_init_states(task_id)
