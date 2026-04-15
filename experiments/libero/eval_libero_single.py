@@ -365,7 +365,7 @@ def run_single_episode(
     }.get(cfg.EVALUATION.task_suite_name, 400)
     
     replan_steps = int(cfg.EVALUATION.get("replan_steps", 5))
-    num_steps_wait = int(cfg.EVALUATION.get("num_steps_wait", 10))
+    num_steps_wait = int(cfg.EVALUATION.get("num_steps_wait", 5))
 
     env.reset()
     obs = env.set_init_state(initial_state)
@@ -573,27 +573,8 @@ def eval_single_process(cfg: DictConfig):
     video_dir = local_log_dir / cfg.EVALUATION.task_suite_name / "videos"
     video_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get task
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[cfg.EVALUATION.task_suite_name]()
-    task = task_suite.get_task(cfg.EVALUATION.task_id)
-    initial_states = task_suite.get_task_init_states(cfg.EVALUATION.task_id)
-
-    while len(initial_states) < int(cfg.EVALUATION.num_trials):
-        initial_states.extend(initial_states[: (int(cfg.EVALUATION.num_trials) - len(initial_states))])
-
-    results = {
-        "task_suite": cfg.EVALUATION.task_suite_name,
-        "task_id": cfg.EVALUATION.task_id,
-        "task_description": None,
-        "successes": 0,
-        "total_episodes": int(cfg.EVALUATION.num_trials),
-        "gpu_id": int(cfg.EVALUATION.get("gpu_id", 0)),
-        "success_episodes": [],
-        "failure_episodes": [],
-        "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "duration": 0,
-    }
 
     # Initialize online text encoder if enabled
     online_encoder = None
@@ -604,34 +585,89 @@ def eval_single_process(cfg: DictConfig):
         text_enc_device = cfg.EVALUATION.get("text_encoder_device", "cuda:0")
         online_encoder = OnlineTextEncoder(online_encoder_path, device=text_enc_device)
         logging.info(f"Using online text encoder on {text_enc_device}")
-    
-    logging.info("Running LIBERO evaluation")
-    task_results = run_single_task(
-        task=task,
-        initial_states=initial_states,
-        model=model,
-        processor=processor,
-        cfg=cfg,
-        video_dir=video_dir,
-        action_horizon=action_horizon,
-        input_w=input_w,
-        input_h=input_h,
-        device=device,
-        online_encoder=online_encoder,
-    )
-    results.update(task_results)
 
-    results["duration"] = time.time() - start_time
+    all_task_results = {}
+    total_successes = 0
+    total_episodes = 0
+
+    logging.info("Running LIBERO evaluation for suite: %s", cfg.EVALUATION.task_suite_name)
+
+    for task_id in range(4,10):
+        print("task_id: ", task_id)
+        task = task_suite.get_task(task_id)
+        initial_states = task_suite.get_task_init_states(task_id)
+
+        while len(initial_states) < int(cfg.EVALUATION.num_trials):
+            initial_states.extend(initial_states[: (int(cfg.EVALUATION.num_trials) - len(initial_states))])
+
+        task_video_dir = video_dir / f"task_{task_id}"
+        task_video_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"\n{'='*60}")
+        print(f"Evaluating task {task_id} / 9")
+        print(f"{'='*60}")
+
+        task_results = run_single_task(
+            task=task,
+            initial_states=initial_states,
+            model=model,
+            processor=processor,
+            cfg=cfg,
+            video_dir=task_video_dir,
+            action_horizon=action_horizon,
+            input_w=input_w,
+            input_h=input_h,
+            device=device,
+            online_encoder=online_encoder,
+        )
+
+        all_task_results[f"task_{task_id}"] = task_results
+        total_successes += task_results["successes"]
+        total_episodes += int(cfg.EVALUATION.num_trials)
+
+        # Save per-task results
+        output_dir = Path(cfg.EVALUATION.output_dir) / cfg.EVALUATION.task_suite_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        per_task_file = output_dir / f"gpu{cfg.EVALUATION.get('gpu_id', 0)}_task{task_id}_results.json"
+        with open(per_task_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "task_suite": cfg.EVALUATION.task_suite_name,
+                "task_id": task_id,
+                "successes": task_results["successes"],
+                "total_episodes": int(cfg.EVALUATION.num_trials),
+                "success_episodes": task_results["success_episodes"],
+                "failure_episodes": task_results["failure_episodes"],
+                "task_description": task_results["task_description"],
+            }, f, indent=4, cls=NumpyEncoder)
+
+        print(f"Task {task_id} completed: {task_results['successes']}/{cfg.EVALUATION.num_trials} successes")
+
+    duration = time.time() - start_time
+    overall_results = {
+        "task_suite": cfg.EVALUATION.task_suite_name,
+        "total_tasks": 10,
+        "total_successes": total_successes,
+        "total_episodes": total_episodes,
+        "success_rate": total_successes / total_episodes if total_episodes > 0 else 0.0,
+        "gpu_id": int(cfg.EVALUATION.get("gpu_id", 0)),
+        "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "duration": duration,
+        "per_task": all_task_results,
+    }
+
     output_dir = Path(cfg.EVALUATION.output_dir) / cfg.EVALUATION.task_suite_name
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / f"gpu{cfg.EVALUATION.get('gpu_id', 0)}_task{cfg.EVALUATION.task_id}_results.json"
+    output_file = output_dir / f"gpu{cfg.EVALUATION.get('gpu_id', 0)}_all_results.json"
 
     with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=4, cls=NumpyEncoder)
+        json.dump(overall_results, f, indent=4, cls=NumpyEncoder)
 
-    print(f"Task {cfg.EVALUATION.task_id} completed: {results['successes']}/{cfg.EVALUATION.num_trials} successes")
-    print(f"Time taken: {results['duration']:.2f} seconds")
-    return results
+    print(f"\n{'='*60}")
+    print(f"Suite {cfg.EVALUATION.task_suite_name} completed: {total_successes}/{total_episodes} successes")
+    print(f"Success rate: {overall_results['success_rate']*100:.1f}%")
+    print(f"Time taken: {duration:.2f} seconds")
+    print(f"{'='*60}")
+    return overall_results
 
 
 if __name__ == "__main__":

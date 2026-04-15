@@ -12,7 +12,7 @@ export CUDA_VISIBLE_DEVICES=$GPU_ID
 export MUJOCO_EGL_DEVICE_ID=0  # EGL 始终用 0（因为 CUDA_VISIBLE_DEVICES 只暴露一块 GPU）
 
 # 其他配置
-CKPT="/home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260414_170339/checkpoints/step_0018000.pt"
+CKPT="/home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260414_170339/checkpoints/step_0020000.pt"
 DATASET_STATS="/home/jwhe/linyihan/CosmosWAM/outputs/dataset_stats.json"
 export LIBERO_PATH="${LIBERO_PATH:-/home/jwhe/linyihan/LIBERO}"
 
@@ -31,49 +31,36 @@ TEXT_ENCODER_DEVICE="cuda:0"  # 程序内部只有一块 GPU，所以是 cuda:0
 echo "=============================================="
 echo "Cosmos-WAM LIBERO Evaluation"
 echo "GPU: $GPU_ID (Physical) -> cuda:0 (Internal)"
-echo "Task Range: $START_TASK ~ $END_TASK (Default)"
 echo "Task Suite: $TASK_SUITE"
 echo "=============================================="
 
-# 循环遍历所有 Task ID
-for TASK_ID in $(seq $START_TASK $END_TASK); do
-    echo ""
-    echo "----------------------------------------------"
-    echo "Processing Task ID: $TASK_ID"
-    echo "----------------------------------------------"
-
-    if [ "$USE_ONLINE_ENCODER" = true ]; then
-        $(which python3) experiments/libero/eval_libero_single.py \
-            ckpt="$CKPT" \
-            EVALUATION.task_suite_name="$TASK_SUITE" \
-            EVALUATION.task_id=$TASK_ID \
-            EVALUATION.num_trials=$NUM_TRIALS \
-            EVALUATION.dataset_stats_path="$DATASET_STATS" \
-            EVALUATION.num_inference_steps=$NUM_INFERENCE_STEPS \
-            EVALUATION.replan_steps=$REPLAN_STEPS \
-            EVALUATION.action_horizon=$ACTION_HORIZON \
-            EVALUATION.gpu_id=0 \
-            EVALUATION.use_online_text_encoder=true \
-            EVALUATION.online_text_encoder_path="/home/jwhe/linyihan/CKPT/Cosmos-Reason1-7B" \
-            EVALUATION.text_encoder_device="$TEXT_ENCODER_DEVICE" \
-            mixed_precision=bf16
-    else
-        $(which python3) experiments/libero/eval_libero_single.py \
-            ckpt="$CKPT" \
-            EVALUATION.task_suite_name="$TASK_SUITE" \
-            EVALUATION.task_id=$TASK_ID \
-            EVALUATION.num_trials=$NUM_TRIALS \
-            EVALUATION.dataset_stats_path="$DATASET_STATS" \
-            EVALUATION.text_embedding_cache_dir="$TEXT_EMBED_CACHE" \
-            EVALUATION.num_inference_steps=$NUM_INFERENCE_STEPS \
-            EVALUATION.replan_steps=$REPLAN_STEPS \
-            EVALUATION.action_horizon=$ACTION_HORIZON \
-            EVALUATION.gpu_id=0 \
-            mixed_precision=bf16
-    fi
-
-    echo "Task $TASK_ID Complete!"
-done
+if [ "$USE_ONLINE_ENCODER" = true ]; then
+    $(which python3) experiments/libero/eval_libero_single.py \
+        ckpt="$CKPT" \
+        EVALUATION.task_suite_name="$TASK_SUITE" \
+        EVALUATION.num_trials=$NUM_TRIALS \
+        EVALUATION.dataset_stats_path="$DATASET_STATS" \
+        EVALUATION.num_inference_steps=$NUM_INFERENCE_STEPS \
+        EVALUATION.replan_steps=$REPLAN_STEPS \
+        EVALUATION.action_horizon=$ACTION_HORIZON \
+        EVALUATION.gpu_id=0 \
+        EVALUATION.use_online_text_encoder=true \
+        EVALUATION.online_text_encoder_path="/home/jwhe/linyihan/CKPT/Cosmos-Reason1-7B" \
+        EVALUATION.text_encoder_device="$TEXT_ENCODER_DEVICE" \
+        mixed_precision=bf16
+else
+    $(which python3) experiments/libero/eval_libero_single.py \
+        ckpt="$CKPT" \
+        EVALUATION.task_suite_name="$TASK_SUITE" \
+        EVALUATION.num_trials=$NUM_TRIALS \
+        EVALUATION.dataset_stats_path="$DATASET_STATS" \
+        EVALUATION.text_embedding_cache_dir="$TEXT_EMBED_CACHE" \
+        EVALUATION.num_inference_steps=$NUM_INFERENCE_STEPS \
+        EVALUATION.replan_steps=$REPLAN_STEPS \
+        EVALUATION.action_horizon=$ACTION_HORIZON \
+        EVALUATION.gpu_id=0 \
+        mixed_precision=bf16
+fi
 
 echo ""
 echo "=============================================="
