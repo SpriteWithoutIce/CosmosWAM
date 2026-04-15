@@ -109,8 +109,10 @@ def run_training(cfg: DictConfig):
     # Enable gradient checkpointing if configured
     if cfg.model.get("enable_gradient_checkpointing", False):
         model.dit.gradient_checkpointing = True
-        model.action_head.gradient_checkpointing = True
-        print("[runtime] Gradient checkpointing enabled for DiT and ActionHeadIMF")
+        # NOTE: ActionHeadIMF uses torch.func.jvp (iMF loss), which is incompatible
+        # with torch.utils.checkpoint. ActionHead is only ~180M params, so we only
+        # checkpoint the large DiT (~2B params).
+        print("[runtime] Gradient checkpointing enabled for DiT only (ActionHeadIMF disabled due to jvp incompatibility)")
 
     # 7. Build Datasets
     train_dataset = instantiate(cfg.data.train)
