@@ -1,5 +1,8 @@
 import os
 import math
+import random
+import numpy as np
+
 import torch
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
@@ -9,20 +12,12 @@ from omegaconf import DictConfig, OmegaConf
 from .utils.samplers import ResumableEpochSampler
 from .utils.logging_config import get_logger
 
-# Optional swanlab import
-try:
-    import swanlab
-    HAS_SWANLAB = True
-except ImportError:
-    HAS_SWANLAB = False
-    swanlab = None
+import swanlab
 
 logger = get_logger(__name__)
 
 
 def set_global_seed(seed: int, get_worker_init_fn: bool = False):
-    import random
-    import numpy as np
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -103,13 +98,39 @@ class CosmosWAMTrainer:
         worker_init_fn = set_global_seed(self.seed, get_worker_init_fn=True)
         self.train_loader = self._build_loader(self.train_dataset, worker_init_fn=worker_init_fn)
 
-        # Optimizer: different LR for video (dit) and action head if configured
+        # Optimizer: different LR for video (dit), latent query, trajectory head, and action head
         video_params = list(self.model.dit.parameters())
+        latent_query_params = list(self.model.latent_query_encoder.parameters())
+        trajectory_params = list(self.model.trajectory_head.parameters())
         action_params = list(self.model.action_head.parameters())
         param_groups = [
             {"params": video_params, "lr": self.learning_rate, "weight_decay": self.weight_decay},
+            {"params": latent_query_params, "lr": self.learning_rate, "weight_decay": self.weight_decay},
+            {"params": trajectory_params, "lr": self.learning_rate, "weight_decay": self.weight_decay},
             {"params": action_params, "lr": float(cfg.get("action_learning_rate", self.learning_rate)), "weight_decay": self.weight_decay},
         ]
+
+        # Print parameter counts
+        def _count_params(params):
+            return sum(p.numel() for p in params)
+
+        dit_params = _count_params(video_params)
+        lq_params = _count_params(latent_query_params)
+        traj_params = _count_params(trajectory_params)
+        act_params = _count_params(action_params)
+        total_trainable = dit_params + lq_params + traj_params + act_params
+        vae_params = _count_params(self.model.vae.parameters()) if hasattr(self.model, "vae") else 0
+
+        logger.info(
+            "Model parameters: DiT=%.2fB, LatentQuery=%.2fM, TrajectoryHead=%.2fM, ActionHead=%.2fM, "
+            "TrainableTotal=%.2fB, VAE(frozen)=%.2fB",
+            dit_params / 1e9,
+            lq_params / 1e6,
+            traj_params / 1e6,
+            act_params / 1e6,
+            total_trainable / 1e9,
+            vae_params / 1e9,
+        )
 
         self.optimizer = torch.optim.AdamW(
             param_groups,
@@ -179,7 +200,7 @@ class CosmosWAMTrainer:
         
         # Initialize swanlab if enabled (only on main process)
         swanlab_config = cfg.get("swanlab", {})
-        self.use_swanlab = HAS_SWANLAB and swanlab_config.get("enabled", False)
+        self.use_swanlab = swanlab_config.get("enabled", False)
         if self.use_swanlab and self.accelerator.is_main_process:
             # Generate run name if not specified or set to "auto"
             run_name = swanlab_config.get("name", None)

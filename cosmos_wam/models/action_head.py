@@ -1,310 +1,302 @@
-from __future__ import annotations
-
 import math
-from typing import List, Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-def _sinusoidal_timestep_embedding(t: torch.Tensor, dim: int) -> torch.Tensor:
-    if t.ndim > 1:
-        t = t.view(t.shape[0], -1)[:, 0]
-    t = t.float()
-    half = dim // 2
-    device = t.device
-    freq = torch.exp(-math.log(10000.0) * torch.arange(half, device=device).float() / max(half - 1, 1))
-    args = t[:, None] * freq[None, :]
-    emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
-    if dim % 2 == 1:
-        emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
-    return emb
-
-
-def _sinusoidal_position_embedding(pos: torch.Tensor, dim: int) -> torch.Tensor:
-    pos = pos.float()
-    half = dim // 2
-    device = pos.device
-    freq = torch.exp(-math.log(10000.0) * torch.arange(half, device=device).float() / max(half - 1, 1))
-    args = pos[:, None] * freq[None, :]
-    emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
-    if dim % 2 == 1:
-        emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
-    return emb
-
-
-def _build_block_causal_self_mask(seq_len: int, block_size: int, device: torch.device) -> torch.Tensor:
-    mask = torch.full((seq_len, seq_len), float("-inf"), device=device)
-    block_size = max(int(block_size), 1)
-    for q_idx in range(seq_len):
-        current_block = q_idx // block_size
-        allowed_until = min(seq_len, (current_block + 1) * block_size)
-        mask[q_idx, :allowed_until] = 0.0
-    return mask
-
-
-class ActionBlock(nn.Module):
-    """Self-Attn + Cross-Attn(video) + FFN with AdaLN."""
-
-    def __init__(self, hidden_dim: int, num_heads: int, video_dim: int, mlp_ratio: float = 4.0):
+class AdaLayerNorm(nn.Module):
+    def __init__(self, hidden_dim):
         super().__init__()
-        self.norm1 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
-        self.self_attn = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True)
+        self.norm = nn.LayerNorm(hidden_dim, elementwise_affine=False)
+        self.linear = nn.Linear(hidden_dim, hidden_dim * 2)
 
-        self.norm2 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
-        self.cross_attn = nn.MultiheadAttention(
-            hidden_dim,
-            num_heads,
-            kdim=video_dim,
-            vdim=video_dim,
-            batch_first=True,
-        )
+    def forward(self, x, time_emb):
+        emb = F.silu(time_emb)
+        scale, shift = self.linear(emb).chunk(2, dim=-1)
+        x = self.norm(x)
+        return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
-        self.norm3 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+
+class StateEncoder(nn.Module):
+    def __init__(self, state_dim, hidden_dim):
+        super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(hidden_dim, int(hidden_dim * mlp_ratio), bias=False),
-            nn.GELU(approximate="tanh"),
-            nn.Linear(int(hidden_dim * mlp_ratio), hidden_dim, bias=False),
+            nn.Linear(state_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
         )
 
-        # AdaLN modulation: 9 params (sa_shift, sa_scale, sa_gate,
-        #                              ca_shift, ca_scale, ca_gate,
-        #                              mlp_shift, mlp_scale, mlp_gate)
-        self.modulation = nn.Linear(hidden_dim, 9 * hidden_dim, bias=False)
-        nn.init.zeros_(self.modulation.weight)
+    def forward(self, state):
+        # state: [B, state_dim] -> [B, 1, hidden_dim]
+        return self.mlp(state).unsqueeze(1)
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        t_emb: torch.Tensor,
-        video_ctx: torch.Tensor,
-        self_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        # Ensure all inputs match the model dtype (for mixed precision)
-        target_dtype = self.modulation.weight.dtype
-        if x.dtype != target_dtype:
-            x = x.to(dtype=target_dtype)
-        if t_emb.dtype != target_dtype:
-            t_emb = t_emb.to(dtype=target_dtype)
-        if video_ctx.dtype != target_dtype:
+
+class DepthEncoder(nn.Module):
+    def __init__(self, hidden_dim=768, num_queries=16, num_layers=2):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+
+        # Patch embed
+        self.patch_embed = nn.Conv2d(1, hidden_dim, kernel_size=14, stride=14)
+        self.pos_embed = nn.Parameter(torch.randn(1, 256, hidden_dim) * 0.02)
+
+        # Perceiver Resampler layers
+        self.queries = nn.Parameter(torch.randn(1, num_queries, hidden_dim) * 0.02)
+        self.layers = nn.ModuleList()
+        for _ in range(num_layers):
+            self.layers.append(
+                nn.ModuleDict(
+                    {
+                        "cross_attn": nn.MultiheadAttention(
+                            embed_dim=hidden_dim, num_heads=8, batch_first=True
+                        ),
+                        "norm1": nn.LayerNorm(hidden_dim),
+                        "ffn": nn.Sequential(
+                            nn.Linear(hidden_dim, hidden_dim * 4),
+                            nn.GELU(),
+                            nn.Linear(hidden_dim * 4, hidden_dim),
+                        ),
+                        "norm2": nn.LayerNorm(hidden_dim),
+                    }
+                )
+            )
+
+    def forward(self, depth):
+        # depth: [B, 1, 224, 224] -> [B, 16, hidden_dim]
+        B = depth.shape[0]
+        target_dtype = next(self.parameters()).dtype
+        depth = depth.to(dtype=target_dtype)
+
+        x = self.patch_embed(depth).flatten(2).permute(0, 2, 1)  # [B, 256, D]
+        x = x + self.pos_embed.to(dtype=target_dtype)
+
+        queries = self.queries.expand(B, -1, -1).to(dtype=target_dtype)
+        for layer in self.layers:
+            attn_out, _ = layer["cross_attn"](queries, x, x)
+            queries = layer["norm1"](queries + attn_out)
+            queries = layer["norm2"](queries + layer["ffn"](queries))
+
+        return queries
+
+
+class SinusoidalPositionalEmbedding(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        # t: [B]
+        t = t.float()
+        half = self.dim // 2
+        device = t.device
+        freq = torch.exp(-math.log(10000.0) * torch.arange(half, device=device).float() / max(half - 1, 1))
+        args = t[:, None] * freq[None, :]
+        emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
+        if self.dim % 2 == 1:
+            emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
+        return emb
+
+
+class ActionEncoderIMF(nn.Module):
+    def __init__(self, action_dim, hidden_dim, action_horizon=32):
+        super().__init__()
+        self.action_proj = nn.Linear(action_dim, hidden_dim)
+        self.time_embed = SinusoidalPositionalEmbedding(hidden_dim)
+        self.pos_embed = nn.Parameter(torch.randn(1, action_horizon, hidden_dim) * 0.02)
+        self.combine = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+    def forward(self, noisy_action, r, t):
+        # noisy_action: [B, T, action_dim]
+        # r, t: [B]
+        B, T, _ = noisy_action.shape
+        target_dtype = next(self.parameters()).dtype
+        noisy_action = noisy_action.to(dtype=target_dtype)
+
+        action_emb = self.action_proj(noisy_action) + self.pos_embed.to(dtype=target_dtype)
+
+        delta_t = t - r
+        time_emb = self.time_embed(delta_t).to(dtype=target_dtype)
+        time_emb = time_emb.unsqueeze(1).expand(-1, T, -1)
+
+        combined = torch.cat([action_emb, time_emb], dim=-1)
+        return self.combine(combined)  # [B, T, hidden_dim]
+
+
+class ActionDiTBlock(nn.Module):
+    def __init__(self, hidden_dim, num_heads, cross_attention_dim=None, is_self_attn=False):
+        super().__init__()
+        self.is_self_attn = is_self_attn
+        self.adaln = AdaLayerNorm(hidden_dim)
+
+        if is_self_attn:
+            self.attn = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True)
+        else:
+            cross_dim = cross_attention_dim if cross_attention_dim is not None else hidden_dim
+            self.attn = nn.MultiheadAttention(
+                hidden_dim,
+                num_heads,
+                kdim=cross_dim,
+                vdim=cross_dim,
+                batch_first=True,
+            )
+
+        self.norm_ffn = nn.LayerNorm(hidden_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 4),
+            nn.GELU(),
+            nn.Linear(hidden_dim * 4, hidden_dim),
+        )
+
+    def forward(self, x, video_ctx, time_emb):
+        x_norm = self.adaln(x, time_emb)
+        target_dtype = next(self.parameters()).dtype
+        x_norm = x_norm.to(dtype=target_dtype)
+
+        if self.is_self_attn:
+            attn_out, _ = self.attn(x_norm, x_norm, x_norm)
+        else:
             video_ctx = video_ctx.to(dtype=target_dtype)
-        
-        # t_emb: [B, D] -> modulation: [B, 9*D]
-        mods = self.modulation(t_emb).chunk(9, dim=-1)
-        shift_sa, scale_sa, gate_sa, shift_ca, scale_ca, gate_ca, shift_mlp, scale_mlp, gate_mlp = mods
-        # Ensure all AdaLN params match input dtype
-        target_dtype = x.dtype
-        shift_sa = shift_sa.unsqueeze(1).to(dtype=target_dtype)
-        scale_sa = scale_sa.unsqueeze(1).to(dtype=target_dtype)
-        gate_sa = gate_sa.unsqueeze(1).to(dtype=target_dtype)
-        shift_ca = shift_ca.unsqueeze(1).to(dtype=target_dtype)
-        scale_ca = scale_ca.unsqueeze(1).to(dtype=target_dtype)
-        gate_ca = gate_ca.unsqueeze(1).to(dtype=target_dtype)
-        shift_mlp = shift_mlp.unsqueeze(1).to(dtype=target_dtype)
-        scale_mlp = scale_mlp.unsqueeze(1).to(dtype=target_dtype)
-        gate_mlp = gate_mlp.unsqueeze(1).to(dtype=target_dtype)
+            attn_out, _ = self.attn(x_norm, video_ctx, video_ctx)
 
-        # Self-attention with AdaLN
-        norm_x = self.norm1(x) * (1 + scale_sa) + shift_sa
-        # Ensure norm_x and mask match attention weight dtype
-        attn_dtype = self.self_attn.in_proj_weight.dtype
-        norm_x_attn = norm_x.to(dtype=attn_dtype)
-        self_mask_attn = self_mask.to(dtype=attn_dtype) if self_mask is not None else None
-        attn_out, _ = self.self_attn(norm_x_attn, norm_x_attn, norm_x_attn, attn_mask=self_mask_attn)
-        x = x + gate_sa * attn_out.to(dtype=x.dtype)
-
-        # Cross-attention to video context with AdaLN
-        norm_x = self.norm2(x) * (1 + scale_ca) + shift_ca
-        cross_dtype = self.cross_attn.in_proj_weight.dtype
-        norm_x_cross = norm_x.to(dtype=cross_dtype)
-        video_ctx_cross = video_ctx.to(dtype=cross_dtype)
-        cross_out, _ = self.cross_attn(norm_x_cross, video_ctx_cross, video_ctx_cross)
-        x = x + gate_ca * cross_out.to(dtype=x.dtype)
-
-        # FFN with AdaLN
-        norm_x = self.norm3(x) * (1 + scale_mlp) + shift_mlp
-        mlp_dtype = self.mlp[0].weight.dtype
-        mlp_out = self.mlp(norm_x.to(dtype=mlp_dtype))
-        x = x + gate_mlp * mlp_out.to(dtype=x.dtype)
+        x = x + attn_out.to(dtype=x.dtype)
+        x = x + self.ffn(self.norm_ffn(x))
         return x
 
 
 class ActionDiT(nn.Module):
+    """Deprecated: old ActionDiT has been replaced by ActionHeadIMF."""
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError(
+            "ActionDiT has been removed. Please use ActionHeadIMF for the new architecture."
+        )
+
+
+class ActionHeadIMF(nn.Module):
     def __init__(
         self,
-        action_dim: int,
-        hidden_dim: int = 1024,
-        num_layers: int = 14,
-        num_heads: int = 16,
-        video_dim: int = 2048,
-        mlp_ratio: float = 4.0,
-        actions_per_latent: int = 8,
-        timestep_buckets: int = 1000,
+        hidden_dim=768,
+        action_dim=7,
+        state_dim=8,
+        action_horizon=32,
+        num_layers=16,
+        num_heads=12,
+        cross_attention_dim=768,
+        video_ctx_dim=2048,
+        dropout=0.1,
+        final_dropout=True,
     ):
         super().__init__()
-        self.action_dim = int(action_dim)
-        self.hidden_dim = int(hidden_dim)
-        self.num_layers = int(num_layers)
-        self.video_dim = int(video_dim)
-        self.actions_per_latent = int(actions_per_latent)
-        self.timestep_buckets = int(timestep_buckets)
+        self.hidden_dim = hidden_dim
+        self.action_dim = action_dim
+        self.action_horizon = action_horizon
+        self.num_layers = num_layers
 
-        self.action_encoder = nn.Sequential(
-            nn.Linear(action_dim, hidden_dim),
+        # Encoders
+        self.state_encoder = StateEncoder(state_dim, hidden_dim)
+        self.depth_encoder = DepthEncoder(hidden_dim, num_queries=16, num_layers=2)
+        self.action_encoder = ActionEncoderIMF(action_dim, hidden_dim, action_horizon=action_horizon)
+
+        # Video context projection: 2048 -> 768
+        self.video_ctx_proj = nn.Sequential(
+            nn.Linear(video_ctx_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+        )
+
+        # Timestep embedding
+        self.time_embed = SinusoidalPositionalEmbedding(hidden_dim)
+        self.time_proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
 
-        # Timestep embedding: sinusoidal + MLP
-        self.timestep_proj = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-        )
-
-        # Video context projection + positional encoding
-        self.video_in = nn.Sequential(
-            nn.LayerNorm(video_dim),
-            nn.Linear(video_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-        )
-
-        self.pos_embedding = nn.Embedding(512, hidden_dim)  # max 512 actions
-
+        # DiT Blocks
         self.blocks = nn.ModuleList([
-            ActionBlock(hidden_dim, num_heads, hidden_dim, mlp_ratio)
-            for _ in range(num_layers)
+            ActionDiTBlock(
+                hidden_dim,
+                num_heads,
+                cross_attention_dim=hidden_dim if i % 2 == 0 else None,
+                is_self_attn=(i % 2 == 1),
+                dropout=dropout,
+                final_dropout=final_dropout,
+            )
+            for i in range(num_layers)
         ])
 
-        self.out_norm = nn.LayerNorm(hidden_dim, eps=1e-6)
-        self.action_out = nn.Linear(hidden_dim, action_dim)
+        # Output: align with GR00T DiT (ada-norm output + proj)
+        self.norm_out = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+        self.proj_out_1 = nn.Linear(hidden_dim, 2 * hidden_dim)
+        self.proj_out_2 = nn.Linear(hidden_dim, action_dim)
 
-        self._cached_masks: dict = {}
+    def _forward_once(self, video_ctx, state, depth, noisy_action, r, t):
+        state_tokens = self.state_encoder(state)          # [B, 1, D]
+        depth_tokens = self.depth_encoder(depth)          # [B, 16, D]
+        action_tokens = self.action_encoder(noisy_action, r, t)  # [B, T, D]
 
-    @property
-    def requires_video_hidden_layers(self) -> bool:
-        return True
+        x = torch.cat([state_tokens, depth_tokens, action_tokens], dim=1)  # [B, 49, D]
 
-    def _build_token_timestep(
-        self,
-        timestep: torch.Tensor,
-        batch_size: int,
-        seq_len: int,
-        device: torch.device,
-    ) -> torch.Tensor:
-        t = timestep.to(device=device)
-        if t.ndim == 2 and t.shape[1] == 1:
-            t = t[:, 0]
-        t = t.clamp(0.0, 1.0)
-        temb = _sinusoidal_timestep_embedding(t * max(float(self.timestep_buckets - 1), 1.0), self.hidden_dim)
-        # Ensure temb matches timestep_proj weight dtype for mixed precision
-        temb = temb.to(dtype=self.timestep_proj[0].weight.dtype)
-        temb = self.timestep_proj(temb).unsqueeze(1)  # [B, 1, D]
-        return temb
+        video_ctx_proj = self.video_ctx_proj(video_ctx)   # [B, 424, D]
 
-    def _build_video_positional_encoding(
-        self,
-        batch_size: int,
-        num_frames: int,
-        tokens_per_frame: int,
-        device: torch.device,
-        dtype: torch.dtype,
-        spatial_hw: Optional[Tuple[int, int]] = None,
-    ) -> torch.Tensor:
-        d_model = self.hidden_dim
-        frame_idx = torch.arange(num_frames, device=device, dtype=torch.float32)
-        frame_emb = _sinusoidal_position_embedding(frame_idx, d_model).unsqueeze(1)  # [F, 1, D]
+        time_emb = self.time_proj(self.time_embed(t - r))  # [B, D]
 
-        if spatial_hw is not None:
-            h, w = spatial_hw
-            y_idx = torch.arange(h, device=device, dtype=torch.float32)
-            x_idx = torch.arange(w, device=device, dtype=torch.float32)
-            y_emb = _sinusoidal_position_embedding(y_idx, d_model).unsqueeze(1).expand(h, w, d_model)
-            x_emb = _sinusoidal_position_embedding(x_idx, d_model).unsqueeze(0).expand(h, w, d_model)
-            spatial_emb = (y_emb + x_emb).reshape(1, h * w, d_model)
-        else:
-            token_idx = torch.arange(tokens_per_frame, device=device, dtype=torch.float32)
-            spatial_emb = _sinusoidal_position_embedding(token_idx, d_model).unsqueeze(0)
+        for block in self.blocks:
+            x = block(x, video_ctx_proj, time_emb)
 
-        pos = frame_emb + spatial_emb  # [F, Tpf, D]
-        pos = pos.reshape(1, num_frames * tokens_per_frame, d_model)
-        return pos.expand(batch_size, -1, -1).to(dtype=dtype)
+        # GR00T-style adaptive output normalization
+        shift, scale = self.proj_out_1(F.silu(time_emb)).chunk(2, dim=-1)
+        x = self.norm_out(x) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+        pred = self.proj_out_2(x[:, -self.action_horizon:])  # [B, T, action_dim]
+        return pred
 
-    def _get_self_mask(self, num_actions: int, device: torch.device) -> torch.Tensor:
-        key = (num_actions, self.actions_per_latent, str(device))
-        if key not in self._cached_masks:
-            mask = _build_block_causal_self_mask(
-                seq_len=num_actions,
-                block_size=self.actions_per_latent,
-                device=device,
-            )
-            self._cached_masks[key] = mask
-        return self._cached_masks[key]
+    def forward(self, video_ctx, state, depth, actions):
+        """Training: iMF loss"""
+        B = actions.shape[0]
+        device = actions.device
 
-    def _encode_video_context(
-        self,
-        video_tokens: torch.Tensor,
-        dtype: torch.dtype,
-    ) -> torch.Tensor:
-        """video_tokens: [B, K, H, W, D] or [B, K*H*W, D]"""
-        if video_tokens.ndim == 5:
-            bsz, num_frames, h, w, hidden_dim = video_tokens.shape
-            tokens = video_tokens.view(bsz, num_frames * h * w, hidden_dim)
-            spatial_hw = (h, w)
-            tokens_per_frame = h * w
-        elif video_tokens.ndim == 3:
-            bsz, num_tokens, hidden_dim = video_tokens.shape
-            tokens = video_tokens
-            spatial_hw = None
-            tokens_per_frame = 1
-            num_frames = num_tokens
-        else:
-            raise ValueError(f"Unexpected video_tokens shape: {video_tokens.shape}")
+        # Sample times uniformly
+        t = torch.rand(B, device=device, dtype=torch.float32)
+        r = torch.rand(B, device=device, dtype=torch.float32)
 
-        # Ensure tokens match video_in weight dtype
-        target_dtype = self.video_in[0].weight.dtype
-        video_ctx = self.video_in(tokens.to(dtype=target_dtype))
-        video_ctx = video_ctx + self._build_video_positional_encoding(
-            batch_size=bsz,
-            num_frames=num_frames,
-            tokens_per_frame=tokens_per_frame,
-            device=video_tokens.device,
-            dtype=dtype,
-            spatial_hw=spatial_hw,
-        )
-        return video_ctx
+        # Construct noisy trajectory
+        noise = torch.randn_like(actions)
+        z_t = (1.0 - t[:, None, None]) * actions + t[:, None, None] * noise
 
-    def forward(
-        self,
-        z_action: torch.Tensor,
-        video_tokens: List[torch.Tensor],
-        timestep: torch.Tensor,
-    ) -> torch.Tensor:
-        if z_action.ndim != 3:
-            raise ValueError(f"Expected z_action [B, L, D], got {tuple(z_action.shape)}")
-        if len(video_tokens) != self.num_layers:
-            raise ValueError(f"Expected {self.num_layers} video layers, got {len(video_tokens)}")
+        # v_theta at (z_t, t, t)
+        v_theta = self._forward_once(video_ctx, state, depth, z_t, t, t)
 
-        bsz, seq_len, _ = z_action.shape
-        device = z_action.device
-        # Get target dtype from model weights
-        target_dtype = self.action_encoder[0].weight.dtype
+        # JVP
+        primals = (z_t, r, t)
+        tangents = (v_theta.detach(), torch.zeros_like(r), torch.ones_like(t))
 
-        # Ensure timestep is float32 for sinusoidal embedding
-        temb = self._build_token_timestep(timestep, batch_size=bsz, seq_len=seq_len, device=device)
+        def fn(z, r_in, t_in):
+            return self._forward_once(video_ctx, state, depth, z, r_in, t_in)
 
-        # Encode action
-        x = self.action_encoder(z_action.to(dtype=target_dtype))
-        pos_ids = torch.arange(seq_len, dtype=torch.long, device=device)
-        x = x + self.pos_embedding(pos_ids).unsqueeze(0) + temb
+        u, dudt = torch.func.jvp(fn, primals, tangents)
 
-        self_mask = self._get_self_mask(num_actions=seq_len, device=device)
+        # Composite V
+        V = u + (t - r)[:, None, None] * dudt.detach()
 
-        for block, layer_video_tokens in zip(self.blocks, video_tokens):
-            video_ctx = self._encode_video_context(layer_video_tokens, dtype=target_dtype)
-            x = block(x, temb.squeeze(1).to(dtype=target_dtype), video_ctx, self_mask=self_mask)
+        # Loss
+        target = noise - actions
+        loss = F.mse_loss(V, target)
+        return loss
 
-        x = self.out_norm(x)
-        return self.action_out(x)
+    @torch.no_grad()
+    def predict_action(self, video_ctx, state, depth):
+        """Inference: one-step sampling"""
+        B = state.shape[0]
+        device = state.device
+        z_1 = torch.randn(B, self.action_horizon, self.action_dim, device=device, dtype=state.dtype)
+
+        r = torch.zeros(B, device=device, dtype=torch.float32)
+        t = torch.ones(B, device=device, dtype=torch.float32)
+
+        u = self._forward_once(video_ctx, state, depth, z_1, r, t)
+        return z_1 - u

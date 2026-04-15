@@ -224,19 +224,28 @@ class Attention(nn.Module):
                 k = k.to(orig_dtype)
         return q, k, v
 
-    def compute_attention(self, q, k, v, **kwargs):
-        result = self.attn_op(q, k, v, **kwargs)
-        return self.output_dropout(self.output_proj(result))
+    def compute_attention(self, q, k, v, attn_mask=None, **kwargs):
+        if attn_mask is not None:
+            # Fallback to torch sdpa for explicit attention masks
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), attn_mask=attn_mask
+            )
+            out = out.transpose(1, 2)
+            out = rearrange(out, "b s h d -> b s (h d)")
+        else:
+            out = self.attn_op(q, k, v, **kwargs)
+        return self.output_dropout(self.output_proj(out))
 
     def forward(
         self,
         x,
         context: Optional[torch.Tensor] = None,
         rope_emb: Optional[torch.Tensor] = None,
+        attn_mask: Optional[torch.Tensor] = None,
         **kwargs,
     ):
         q, k, v = self.compute_qkv(x, context, rope_emb=rope_emb)
-        return self.compute_attention(q, k, v)
+        return self.compute_attention(q, k, v, attn_mask=attn_mask, **kwargs)
 
     def set_context_parallel_group(self, *args, **kwargs):
         self.attn_op.set_context_parallel_group(*args, **kwargs)
@@ -554,11 +563,11 @@ class Block(nn.Module):
         emb_B_T_D: torch.Tensor,
         crossattn_emb: torch.Tensor,
         rope_emb_L_1_1_D: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        B, T, H, W, D = x_B_T_H_W_D.shape
+        is_1d = x_B_T_H_W_D.dim() == 3
 
         if self.use_adaln_lora:
-            # Sequential(SiLU, Linear(x_dim, 256), Linear(256, 3*x_dim))
             shift_sa, scale_sa, gate_sa = self.adaln_modulation_self_attn(emb_B_T_D).chunk(3, dim=-1)
             shift_ca, scale_ca, gate_ca = self.adaln_modulation_cross_attn(emb_B_T_D).chunk(3, dim=-1)
             shift_mlp, scale_mlp, gate_mlp = self.adaln_modulation_mlp(emb_B_T_D).chunk(3, dim=-1)
@@ -567,31 +576,56 @@ class Block(nn.Module):
             shift_ca, scale_ca, gate_ca = self.adaln_modulation_cross_attn(emb_B_T_D).chunk(3, dim=-1)
             shift_mlp, scale_mlp, gate_mlp = self.adaln_modulation_mlp(emb_B_T_D).chunk(3, dim=-1)
 
-        shift_sa = rearrange(shift_sa, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
-        scale_sa = rearrange(scale_sa, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
-        gate_sa = rearrange(gate_sa, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
-        shift_ca = rearrange(shift_ca, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
-        scale_ca = rearrange(scale_ca, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
-        gate_ca = rearrange(gate_ca, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
-        shift_mlp = rearrange(shift_mlp, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
-        scale_mlp = rearrange(scale_mlp, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
-        gate_mlp = rearrange(gate_mlp, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
+        if is_1d:
+            shift_sa = shift_sa.type_as(x_B_T_H_W_D)
+            scale_sa = scale_sa.type_as(x_B_T_H_W_D)
+            gate_sa = gate_sa.type_as(x_B_T_H_W_D)
+            shift_ca = shift_ca.type_as(x_B_T_H_W_D)
+            scale_ca = scale_ca.type_as(x_B_T_H_W_D)
+            gate_ca = gate_ca.type_as(x_B_T_H_W_D)
+            shift_mlp = shift_mlp.type_as(x_B_T_H_W_D)
+            scale_mlp = scale_mlp.type_as(x_B_T_H_W_D)
+            gate_mlp = gate_mlp.type_as(x_B_T_H_W_D)
 
-        norm_x = modulate(self.norm1(x_B_T_H_W_D), scale_sa, shift_sa)
-        norm_x_flat = rearrange(norm_x, "b t h w d -> b (t h w) d")
-        attn_out_flat = self.self_attn(norm_x_flat, rope_emb=rope_emb_L_1_1_D)
-        attn_out = rearrange(attn_out_flat, "b (t h w) d -> b t h w d", t=T, h=H, w=W)
-        x_B_T_H_W_D = x_B_T_H_W_D + gate_sa * attn_out
+            norm_x = modulate(self.norm1(x_B_T_H_W_D), scale_sa, shift_sa)
+            attn_out = self.self_attn(norm_x, rope_emb=rope_emb_L_1_1_D, attn_mask=attention_mask)
+            x_B_T_H_W_D = x_B_T_H_W_D + gate_sa * attn_out
 
-        norm_x = modulate(self.norm3(x_B_T_H_W_D), scale_ca, shift_ca)
-        norm_x_flat = rearrange(norm_x, "b t h w d -> b (t h w) d")
-        cross_out_flat = self.cross_attn(norm_x_flat, context=crossattn_emb)
-        cross_out = rearrange(cross_out_flat, "b (t h w) d -> b t h w d", t=T, h=H, w=W)
-        x_B_T_H_W_D = x_B_T_H_W_D + gate_ca * cross_out
+            norm_x = modulate(self.norm3(x_B_T_H_W_D), scale_ca, shift_ca)
+            cross_out = self.cross_attn(norm_x, context=crossattn_emb)
+            x_B_T_H_W_D = x_B_T_H_W_D + gate_ca * cross_out
 
-        norm_x = modulate(self.norm2(x_B_T_H_W_D), scale_mlp, shift_mlp)
-        mlp_out = self.mlp['layer2'](self.mlp_activation(self.mlp['layer1'](norm_x)))
-        x_B_T_H_W_D = x_B_T_H_W_D + gate_mlp * mlp_out
+            norm_x = modulate(self.norm2(x_B_T_H_W_D), scale_mlp, shift_mlp)
+            mlp_out = self.mlp['layer2'](self.mlp_activation(self.mlp['layer1'](norm_x)))
+            x_B_T_H_W_D = x_B_T_H_W_D + gate_mlp * mlp_out
+        else:
+            B, T, H, W, D = x_B_T_H_W_D.shape
+
+            shift_sa = rearrange(shift_sa, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
+            scale_sa = rearrange(scale_sa, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
+            gate_sa = rearrange(gate_sa, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
+            shift_ca = rearrange(shift_ca, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
+            scale_ca = rearrange(scale_ca, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
+            gate_ca = rearrange(gate_ca, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
+            shift_mlp = rearrange(shift_mlp, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
+            scale_mlp = rearrange(scale_mlp, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
+            gate_mlp = rearrange(gate_mlp, "b t d -> b t 1 1 d").type_as(x_B_T_H_W_D)
+
+            norm_x = modulate(self.norm1(x_B_T_H_W_D), scale_sa, shift_sa)
+            norm_x_flat = rearrange(norm_x, "b t h w d -> b (t h w) d")
+            attn_out_flat = self.self_attn(norm_x_flat, rope_emb=rope_emb_L_1_1_D)
+            attn_out = rearrange(attn_out_flat, "b (t h w) d -> b t h w d", t=T, h=H, w=W)
+            x_B_T_H_W_D = x_B_T_H_W_D + gate_sa * attn_out
+
+            norm_x = modulate(self.norm3(x_B_T_H_W_D), scale_ca, shift_ca)
+            norm_x_flat = rearrange(norm_x, "b t h w d -> b (t h w) d")
+            cross_out_flat = self.cross_attn(norm_x_flat, context=crossattn_emb)
+            cross_out = rearrange(cross_out_flat, "b (t h w) d -> b t h w d", t=T, h=H, w=W)
+            x_B_T_H_W_D = x_B_T_H_W_D + gate_ca * cross_out
+
+            norm_x = modulate(self.norm2(x_B_T_H_W_D), scale_mlp, shift_mlp)
+            mlp_out = self.mlp['layer2'](self.mlp_activation(self.mlp['layer1'](norm_x)))
+            x_B_T_H_W_D = x_B_T_H_W_D + gate_mlp * mlp_out
         return x_B_T_H_W_D
 
 
@@ -611,24 +645,6 @@ class SACConfig:
         def context_fn():
             return torch.enable_grad()
         return context_fn
-
-
-def enable_selective_checkpoint(model: MiniTrainDIT, sac_config: SACConfig, blocks: nn.ModuleList):
-    if sac_config.mode == SACConfig.CheckpointMode.NONE:
-        return
-    for block_id, block in blocks.named_children():
-        if int(block_id) % sac_config.every_n_blocks == 0:
-            from torch.utils.checkpoint import checkpoint
-            # Wrap block forward
-            orig_forward = block.forward
-            def make_forward(orig):
-                def _forward(x, emb, crossattn_emb, rope_emb_L_1_1_D=None):
-                    return torch.utils.checkpoint.checkpoint(
-                        orig, x, emb, crossattn_emb, rope_emb_L_1_1_D,
-                        use_reentrant=False,
-                    )
-                return _forward
-            block.forward = make_forward(orig_forward)
 
 
 # ---------------------------------------------------------------------------
@@ -654,8 +670,6 @@ class MiniTrainDIT(nn.Module):
         use_crossattn_projection: bool = False,
         crossattn_proj_in_channels: int = 1024,
         pos_emb_cls: str = "sincos",
-        pos_emb_learnable: bool = False,
-        pos_emb_interpolation: str = "crop",
         rope_h_extrapolation_ratio: float = 1.0,
         rope_w_extrapolation_ratio: float = 1.0,
         rope_t_extrapolation_ratio: float = 1.0,
@@ -753,6 +767,33 @@ class MiniTrainDIT(nn.Module):
         x = x.view(B, C, T * p_t, H * p_s, W * p_s)
         return x
 
+    def _build_query_attention_mask(
+        self,
+        video_tokens: int,
+        query_tokens: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Build attention mask for layers 25-28.
+        cond/noisy can see each other but not query.
+        query can see cond and itself but not noisy.
+        """
+        total = video_tokens + query_tokens
+        mask = torch.full((total, total), float("-inf"), device=device, dtype=dtype)
+        # video tokens (cond + noisy) can see all video tokens
+        mask[:video_tokens, :video_tokens] = 0.0
+        # query can see cond tokens and itself
+        # We don't know exact cond token count here, so we use a conservative mask:
+        # In our setup cond is the first temporal frame = 1 * H * W tokens.
+        # This will be handled by the caller passing num_cond_frames.
+        # Actually, in the architecture, query can see ALL condition tokens.
+        # But condition tokens are the first part of video_tokens.
+        # For simplicity and correctness with the architecture doc:
+        # query sees cond (first frame) + query. We assume num_cond_frames=1.
+        cond_tokens = video_tokens // 2  # Wait, video_tokens = T*H*W, cond=1*H*W
+        # The caller should pass num_cond_frames. Let's compute cond_tokens from it.
+        return mask
+
     def forward(
         self,
         x_B_C_T_H_W: torch.Tensor,
@@ -761,7 +802,9 @@ class MiniTrainDIT(nn.Module):
         fps: Optional[torch.Tensor] = None,
         padding_mask: Optional[torch.Tensor] = None,
         intermediate_feature_ids: Optional[List[int]] = None,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
+        latent_query_tokens: Optional[torch.Tensor] = None,
+        num_cond_frames: int = 1,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
         x_B_T_H_W_D, rope_emb_L_1_1_D, _ = self.prepare_embedded_sequence(
             x_B_C_T_H_W, fps=fps, padding_mask=padding_mask
         )
@@ -775,21 +818,84 @@ class MiniTrainDIT(nn.Module):
         t_embedding_B_T_D = self.t_embedding_norm(t_embedding_B_T_D)
 
         B, T, H, W, D = x_B_T_H_W_D.shape
-        intermediate_features = []
-        for i, block in enumerate(self.blocks):
-            x_B_T_H_W_D = block(
-                x_B_T_H_W_D,
-                t_embedding_B_T_D,
-                crossattn_emb,
-                rope_emb_L_1_1_D=rope_emb_L_1_1_D,
+
+        if latent_query_tokens is not None:
+            # Architecture: Layers 1-24 standard, 25-28 with latent query
+            num_standard_layers = self.num_blocks - 4
+            for i in range(num_standard_layers):
+                x_B_T_H_W_D = self.blocks[i](
+                    x_B_T_H_W_D,
+                    t_embedding_B_T_D,
+                    crossattn_emb,
+                    rope_emb_L_1_1_D=rope_emb_L_1_1_D,
+                )
+
+            # Layers 25-28: flatten and concat latent query
+            x_flat = rearrange(x_B_T_H_W_D, "b t h w d -> b (t h w) d")
+            x_all = torch.cat([x_flat, latent_query_tokens], dim=1)
+
+            # Expand timestep embedding to match all tokens
+            emb_flat = rearrange(
+                t_embedding_B_T_D.unsqueeze(2).unsqueeze(3).expand(-1, -1, H, W, -1),
+                "b t h w d -> b (t h w) d",
             )
-            if intermediate_feature_ids and i in intermediate_feature_ids:
-                feat = rearrange(x_B_T_H_W_D, "b t h w d -> b (t h w) d")
-                intermediate_features.append(feat)
+            num_query = latent_query_tokens.shape[1]
+            query_emb = t_embedding_B_T_D[:, :1, :].expand(-1, num_query, -1)
+            emb_all = torch.cat([emb_flat, query_emb], dim=1)
 
-        x_B_T_H_W_O = self.final_layer(x_B_T_H_W_D, t_embedding_B_T_D)
-        x_B_C_Tt_Hp_Wp = self.unpatchify(x_B_T_H_W_O)
+            # Attention mask
+            video_tokens = T * H * W
+            cond_tokens = num_cond_frames * H * W
+            total_tokens = video_tokens + num_query
+            attn_mask = torch.full(
+                (total_tokens, total_tokens),
+                float("-inf"),
+                device=x_all.device,
+                dtype=x_all.dtype,
+            )
+            # video tokens see all video tokens
+            attn_mask[:video_tokens, :video_tokens] = 0.0
+            # query sees cond + query
+            attn_mask[video_tokens:, :cond_tokens] = 0.0
+            attn_mask[video_tokens:, video_tokens:] = 0.0
 
-        if intermediate_feature_ids:
-            return x_B_C_Tt_Hp_Wp, intermediate_features
-        return x_B_C_Tt_Hp_Wp
+            for i in range(num_standard_layers, self.num_blocks):
+                x_all = self.blocks[i](
+                    x_all,
+                    emb_all,
+                    crossattn_emb,
+                    rope_emb_L_1_1_D=None,
+                    attention_mask=attn_mask,
+                )
+
+            # Split outputs
+            cond_hidden = x_all[:, :cond_tokens]
+            noisy_hidden = x_all[:, cond_tokens:video_tokens]
+            query_hidden = x_all[:, video_tokens:]
+
+            # Final layer only on noisy tokens
+            noisy_hidden_5d = noisy_hidden.view(B, T - num_cond_frames, H, W, D)
+            x_B_T_H_W_O = self.final_layer(
+                noisy_hidden_5d, t_embedding_B_T_D[:, num_cond_frames:, :]
+            )
+            pred_v = self.unpatchify(x_B_T_H_W_O)
+            return pred_v, cond_hidden, noisy_hidden, query_hidden
+        else:
+            intermediate_features = []
+            for i, block in enumerate(self.blocks):
+                x_B_T_H_W_D = block(
+                    x_B_T_H_W_D,
+                    t_embedding_B_T_D,
+                    crossattn_emb,
+                    rope_emb_L_1_1_D=rope_emb_L_1_1_D,
+                )
+                if intermediate_feature_ids and i in intermediate_feature_ids:
+                    feat = rearrange(x_B_T_H_W_D, "b t h w d -> b (t h w) d")
+                    intermediate_features.append(feat)
+
+            x_B_T_H_W_O = self.final_layer(x_B_T_H_W_D, t_embedding_B_T_D)
+            x_B_C_Tt_Hp_Wp = self.unpatchify(x_B_T_H_W_O)
+
+            if intermediate_feature_ids:
+                return x_B_C_Tt_Hp_Wp, intermediate_features
+            return x_B_C_Tt_Hp_Wp

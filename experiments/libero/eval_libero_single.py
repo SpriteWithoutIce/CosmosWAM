@@ -319,13 +319,20 @@ def _predict_action_chunk(
     if image.ndim == 4:
         image = image.unsqueeze(2)  # Add T dimension
     
+    # Prepare additional inputs for new architecture
+    state = proprio[:, 0, :] if proprio.ndim == 3 else proprio[0, :].unsqueeze(0)
+    eef_pos = state[:, :3]
+    # TODO: use real depth from wrist camera via Depth-Anything-V2
+    wrist_depth = torch.zeros(image.shape[0], 1, 224, 224, device=device, dtype=image.dtype)
+
     # Run inference
     with torch.no_grad():
         action = model.infer_action(
             first_frame_pixels=image,
-            action_horizon=action_horizon,
+            wrist_depth=wrist_depth,
+            state=state,
+            eef_pos=eef_pos,
             context=context,
-            num_inference_steps=num_inference_steps,
         )
 
     # Denormalize action

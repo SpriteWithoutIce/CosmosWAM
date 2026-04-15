@@ -17,6 +17,7 @@ from ..dataset_utils import ResizeSmallestSideAspectPreserving, CenterCrop, Norm
 from cosmos_wam.utils.logging_config import get_logger
 from cosmos_wam.utils import misc, pytorch_utils
 from accelerate import PartialState
+from cosmos_wam.utils.projection import project_world_to_pixel, compute_pose_keypoints, generate_gaussian_heatmap
 logger = get_logger(__name__)
 
 
@@ -43,6 +44,8 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         concat_multi_camera: str = "horizontal", # "horizontal", "vertical", "robotwin", or None
         override_instruction: Optional[str] = None, # whether to hardcode a specific instruction for all samples, for debugging
         use_text_prompt_template: bool = True, # whether to use DEFAULT_PROMPT template for text embedding hash
+        camera_params_path: Optional[str] = None,
+        depth_map_dir: Optional[str] = None,
     ):
         self.lerobot_dataset = BaseLerobotDataset(
             dataset_dirs=dataset_dirs,
@@ -74,6 +77,23 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         self.concat_multi_camera = concat_multi_camera
         self.override_instruction = override_instruction
         self.use_text_prompt_template = use_text_prompt_template
+        self.camera_params_path = camera_params_path
+        self.depth_map_dir = depth_map_dir
+
+        # Load camera params for trajectory projection
+        if camera_params_path is not None:
+            import json
+            with open(camera_params_path, "r") as f:
+                params = json.load(f)
+            self._intrinsic = np.array(params["intrinsic"], dtype=np.float32)
+            self._extrinsic = np.array(params["extrinsic"], dtype=np.float32)
+            self._render_h = params.get("image_height", 256)
+            self._render_w = params.get("image_width", 256)
+        else:
+            self._intrinsic = None
+            self._extrinsic = None
+            self._render_h = 256
+            self._render_w = 256
 
         self.resize_transform = ResizeSmallestSideAspectPreserving(
             args={"img_w": self.video_size[1], "img_h": self.video_size[0]},
@@ -242,10 +262,68 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         context[~context_mask] = 0.0
         context_mask = torch.ones_like(context_mask)
         
+        # Additional fields for new architecture
+        state = proprio[0, :] if proprio is not None else None  # [state_dim]
+        eef_pos = proprio[0, :3] if proprio is not None else None  # [3]
+
+        # Target trajectory: 16x16 heatmaps for 4 pose keypoints (origin + XYZ axes)
+        target_trajectory = None
+        if self._intrinsic is not None and proprio is not None:
+            future_proprio = proprio.cpu().numpy()  # [T, 8]
+            future_pos = future_proprio[:, :3]   # [T, 3]
+            future_rpy = future_proprio[:, 3:6]  # [T, 3]
+
+            # 1) Compute 4 keypoints per frame
+            points_3d = compute_pose_keypoints(future_pos, future_rpy, axis_length=0.1)  # [T, 4, 3]
+
+            # 2) Project to 2D pixel coordinates
+            points_2d = project_world_to_pixel(
+                points_3d.reshape(-1, 3),
+                self._intrinsic,
+                self._extrinsic,
+                self._render_h,
+                self._render_w,
+            )  # [T*4, 2] numpy
+            points_2d = points_2d.reshape(-1, 4, 2)
+
+            # 3) Scale to 16x16 heatmap resolution
+            heatmap_size = 16
+            scale_x = heatmap_size / self._render_w
+            scale_y = heatmap_size / self._render_h
+            points_2d[:, :, 0] *= scale_x
+            points_2d[:, :, 1] *= scale_y
+
+            # 4) Generate 4-channel Gaussian heatmaps
+            T = future_proprio.shape[0]
+            heatmaps = np.zeros((T, 4, heatmap_size, heatmap_size), dtype=np.float32)
+            sigma = 1.0
+            for t in range(T):
+                for c in range(4):
+                    heatmaps[t, c] = generate_gaussian_heatmap(
+                        points_2d[t, c, 0],
+                        points_2d[t, c, 1],
+                        heatmap_size,
+                        heatmap_size,
+                        sigma,
+                    )
+
+            target_trajectory = torch.from_numpy(heatmaps).float()
+
+        # Depth map for condition frame (frame_idx)
+        depth_map = None
+        if self.depth_map_dir is not None:
+            depth_map = self._get_depth_map(sample["idx"])
+            if depth_map is not None:
+                depth_map = torch.from_numpy(depth_map).unsqueeze(0).float()
+
         data = {
             "video": video,
             "action": action,
             "proprio": proprio,
+            "state": state,
+            "eef_pos": eef_pos,
+            "target_trajectory": target_trajectory,
+            "depth_map": depth_map,
             "prompt": instruction,
             "context": context,
             "context_mask": context_mask,
@@ -254,6 +332,46 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             "proprio_is_pad": sample["proprio_is_pad"],
         }
         return data
+
+    def _get_depth_map(self, frame_idx: int):
+        """Load precomputed depth map for a given global frame index."""
+        if self.depth_map_dir is None:
+            return None
+
+        # Find global episode index
+        ep_data = self.lerobot_dataset.episode_data_index
+        ep_mask = (frame_idx >= ep_data["from"]) & (frame_idx < ep_data["to"])
+        ep_indices = ep_mask.nonzero(as_tuple=True)[0]
+        if len(ep_indices) == 0:
+            return None
+        ep_idx = ep_indices[0].item()
+
+        # Find dataset index and local episode index
+        local_ep_idx = ep_idx
+        ds_name = None
+        for ds_idx, ds in enumerate(self.lerobot_dataset.multi_dataset._datasets):
+            if local_ep_idx < ds.num_episodes:
+                ds_name = self.lerobot_dataset.multi_dataset.ds_names[ds_idx]
+                break
+            local_ep_idx -= ds.num_episodes
+        if ds_name is None:
+            return None
+
+        filename = f"{ds_name}_episode_{local_ep_idx:06d}_depth.npy"
+        depth_path = os.path.join(self.depth_map_dir, filename)
+        if not os.path.exists(depth_path):
+            return None
+
+        depths = np.load(depth_path)
+        local_frame_idx = (frame_idx - ep_data["from"][ep_idx]).item()
+        if local_frame_idx >= len(depths):
+            return None
+        depth = depths[local_frame_idx]
+        # Resize to 224x224 if needed
+        if depth.shape != (224, 224):
+            import cv2
+            depth = cv2.resize(depth, (224, 224), interpolation=cv2.INTER_LINEAR)
+        return depth.astype(np.float32)
 
     def _get_cached_text_context(self, prompt: str):
         if self.text_embedding_cache_dir is None:

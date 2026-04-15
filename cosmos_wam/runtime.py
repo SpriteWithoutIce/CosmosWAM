@@ -11,7 +11,8 @@ def run_training(cfg: DictConfig):
     from .models.cosmos_wam import CosmosWAM
     from .models.dit_wrapper import MiniTrainDIT, SACConfig
     from .models.vae_wrapper import Wan2pt1VAEInterface
-    from .models.action_head import ActionDiT
+    from .models.latent_query import LatentQueryEncoder, TrajectoryHead
+    from .models.action_head import ActionHeadIMF
     from datetime import datetime
 
     # Add timestamp to output_dir for unique experiment identification
@@ -24,7 +25,6 @@ def run_training(cfg: DictConfig):
     device = torch.device(f"cuda:{local_rank}")
 
     # 1. Build VAE - each rank has its own VAE on its own GPU
-    # Set CUDA_VISIBLE_DEVICES temporarily to control which GPU VAE initializes on
     vae = Wan2pt1VAEInterface(
         vae_pth=cfg.model.vae_checkpoint,
         temporal_window=cfg.model.get("vae_temporal_window", 16),
@@ -65,43 +65,51 @@ def run_training(cfg: DictConfig):
     else:
         print(f"[runtime] Skipping pre-trained DiT loading, will resume from {resume_ckpt_path}")
 
-    # Optional: enable gradient checkpointing
-    if cfg.model.get("enable_gradient_checkpointing", True):
-        from .models.dit_wrapper import enable_selective_checkpoint
-        enable_selective_checkpoint(dit, SACConfig(mode="block_wise", every_n_blocks=1), dit.blocks)
-
-    # 3. Build Action Head
-    action_head = ActionDiT(
-        action_dim=cfg.model.action_head.action_dim,
-        hidden_dim=cfg.model.action_head.hidden_dim,
-        num_layers=cfg.model.action_head.num_layers,
-        num_heads=cfg.model.action_head.num_heads,
-        video_dim=cfg.model.action_head.video_dim,
-        mlp_ratio=cfg.model.action_head.get("mlp_ratio", 4.0),
-        actions_per_latent=cfg.model.action_head.get("actions_per_latent", 8),
+    # 3. Build Latent Query Encoder
+    latent_query_encoder = LatentQueryEncoder(
+        hidden_dim=cfg.model.latent_query.get("hidden_dim", 2048),
+        num_queries=cfg.model.latent_query.get("num_queries", 32),
+        sigma=cfg.model.latent_query.get("sigma", 8.0),
+        camera_params_path=cfg.model.latent_query.get("camera_params_path", None),
+        image_height=cfg.model.latent_query.get("image_height", 224),
+        image_width=cfg.model.latent_query.get("image_width", 224),
     )
 
-    # 4. Build CosmosWAM
+    # 4. Build Trajectory Head
+    trajectory_head = TrajectoryHead(
+        hidden_dim=cfg.model.trajectory_head.get("hidden_dim", 2048),
+    )
+
+    # 5. Build Action Head (iMF)
+    action_head = ActionHeadIMF(
+        hidden_dim=cfg.model.action_head.hidden_dim,
+        action_dim=cfg.model.action_head.action_dim,
+        state_dim=cfg.model.action_head.get("state_dim", 8),
+        action_horizon=cfg.model.action_head.get("action_horizon", 32),
+        num_layers=cfg.model.action_head.num_layers,
+        num_heads=cfg.model.action_head.num_heads,
+        cross_attention_dim=cfg.model.action_head.get("cross_attention_dim", 768),
+        video_ctx_dim=cfg.model.action_head.get("video_ctx_dim", 2048),
+        dropout=cfg.model.action_head.get("dropout", 0.1),
+        final_dropout=cfg.model.action_head.get("final_dropout", True),
+    )
+
+    # 6. Build CosmosWAM
     model = CosmosWAM(
         dit=dit,
         vae=vae,
+        latent_query_encoder=latent_query_encoder,
+        trajectory_head=trajectory_head,
         action_head=action_head,
         lambda_action=cfg.model.get("lambda_action", 1.0),
+        lambda_traj=cfg.model.get("lambda_traj", 1.0),
         num_cond_frames=cfg.model.get("num_cond_frames", 1),
     )
 
-    # 4.5 Compile model with torch.compile for H100 optimization
-    if cfg.model.get("compile", False):
-        print("[runtime] Compiling model with torch.compile (mode='max-autotune')...")
-        # Only compile DiT and action_head, not VAE (VAE is frozen and called once)
-        model.dit = torch.compile(model.dit, mode="max-autotune", fullgraph=False)
-        model.action_head = torch.compile(model.action_head, mode="max-autotune", fullgraph=False)
-        print("[runtime] Model compilation done")
-
-    # 5. Build Datasets
+    # 7. Build Datasets
     train_dataset = instantiate(cfg.data.train)
     val_dataset = instantiate(cfg.data.get("val", None)) if "val" in cfg.data else None
 
-    # 6. Train
+    # 8. Train
     trainer = CosmosWAMTrainer(model=model, train_dataset=train_dataset, val_dataset=val_dataset, cfg=cfg)
     trainer.train()

@@ -588,13 +588,20 @@ class CosmosWAMRobotWinPolicy:
         image_tensor = self._build_image_tensor(observation)  # [1, 3, 240, 320]
         context = self._get_text_context(instruction)  # [1, L, D]
         
+        # Prepare additional inputs for new architecture
+        # TODO: extract real robot state and wrist depth from observation
+        state = torch.zeros(1, 8, device=image_tensor.device, dtype=image_tensor.dtype)
+        eef_pos = state[:, :3]
+        wrist_depth = torch.zeros(1, 1, 224, 224, device=image_tensor.device, dtype=image_tensor.dtype)
+
         # Run inference
         with torch.no_grad():
             action = self.model.infer_action(
                 first_frame_pixels=image_tensor,
-                action_horizon=self.action_horizon,
+                wrist_depth=wrist_depth,
+                state=state,
+                eef_pos=eef_pos,
                 context=context,
-                num_inference_steps=self.num_inference_steps,
             )    
         action_chunk = self._denormalize_action(action)[0]  # [T, D]      
         return action_chunk
