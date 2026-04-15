@@ -336,6 +336,10 @@ class CosmosWAMTrainer:
             self.model.train()
             if self.action_head_train is not None:
                 self.action_head_train.train()
+                # ensure action_head_train is on the same device as the model outputs
+                model_device = next(self.model.parameters()).device
+                if next(self.action_head_train.parameters()).device != model_device:
+                    self.action_head_train = self.action_head_train.to(model_device)
             epoch_steps = 0
             for batch in self.train_loader:
                 with self.accelerator.accumulate(self.model):

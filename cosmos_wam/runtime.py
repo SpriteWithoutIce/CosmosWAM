@@ -119,9 +119,9 @@ def run_training(cfg: DictConfig):
         video_ctx_dim=cfg.model.action_head.get("video_ctx_dim", 2048),
         dropout=cfg.model.action_head.get("dropout", 0.1),
         final_dropout=cfg.model.action_head.get("final_dropout", True),
-    ).float()
+    ).float().to(device)
     action_head_train.load_state_dict(action_head.state_dict())
-    print("[runtime] ActionHeadIMF fp32 training copy created (outside DeepSpeed)")
+    print(f"[runtime] ActionHeadIMF fp32 training copy created on {device} (outside DeepSpeed)")
 
     # Enable gradient checkpointing if configured
     if cfg.model.get("enable_gradient_checkpointing", False):

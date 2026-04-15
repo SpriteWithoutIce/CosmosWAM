@@ -233,6 +233,14 @@ class ActionHeadIMF(nn.Module):
         self.proj_out_2 = nn.Linear(hidden_dim, action_dim)
 
     def _forward_once(self, video_ctx, state, depth, noisy_action, r, t):
+        device = next(self.parameters()).device
+        video_ctx = video_ctx.to(device)
+        state = state.to(device)
+        depth = depth.to(device)
+        noisy_action = noisy_action.to(device)
+        r = r.to(device)
+        t = t.to(device)
+
         state_tokens = self.state_encoder(state)          # [B, 1, D]
         depth_tokens = self.depth_encoder(depth)          # [B, 16, D]
         action_tokens = self.action_encoder(noisy_action, r, t)  # [B, T, D]
