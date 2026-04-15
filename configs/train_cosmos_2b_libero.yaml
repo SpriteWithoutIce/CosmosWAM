@@ -15,7 +15,7 @@ model:
         hidden_dim: 2048
         num_queries: 32
         sigma: 8.0
-        camera_params_path: /Users/linyihan/Documents/GitHub/CosmosWAM/scripts/gaussian/camera_params.json
+        camera_params_path: /home/jwhe/linyihan/CosmosWAM/scripts/gaussian/camera_params.json
         image_height: 224
         image_width: 224
 
@@ -120,7 +120,7 @@ data:
         context_len: 128
         use_text_prompt_template: true
         pretrained_norm_stats: /home/jwhe/linyihan/CosmosWAM/datasets_stats/libero_dataset_stats.json
-        camera_params_path: /Users/linyihan/Documents/GitHub/CosmosWAM/scripts/gaussian/camera_params.json
+        camera_params_path: /home/jwhe/linyihan/CosmosWAM/scripts/gaussian/camera_params.json
         depth_map_dir: /home/jwhe/linyihan/datasets/libero_depth_maps
 
 trainer:
@@ -139,8 +139,8 @@ trainer:
     max_grad_norm: 1.0
     seed: ${seed}
     resume: false
-    resume_from_checkpoint: /home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260410_122224/checkpoints/step_0015000.pt
-    resume_reset_step: true # true: 加载权重但从 step=0 开始计数；false: 恢复 step 和 epoch
+    # resume_from_checkpoint: /home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260410_122224/checkpoints/step_0015000.pt
+    # resume_reset_step: true # true: 加载权重但从 step=0 开始计数；false: 恢复 step 和 epoch
     mixed_precision: "bf16"
 
     lr_schedule: "cosine"
