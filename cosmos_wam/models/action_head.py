@@ -88,11 +88,11 @@ class SinusoidalPositionalEmbedding(nn.Module):
         self.dim = dim
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
-        # t: [B]
-        t = t.float()
+        # t: [B], may be a functorch dual tensor under jvp; avoid dtype casts that break duals
         half = self.dim // 2
         device = t.device
         freq = torch.exp(-math.log(10000.0) * torch.arange(half, device=device).float() / max(half - 1, 1))
+        freq = freq.to(dtype=t.dtype)
         args = t[:, None] * freq[None, :]
         emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
         if self.dim % 2 == 1:
@@ -159,16 +159,13 @@ class ActionDiTBlock(nn.Module):
 
     def forward(self, x, video_ctx, time_emb):
         x_norm = self.adaln(x, time_emb)
-        target_dtype = next(self.parameters()).dtype
-        x_norm = x_norm.to(dtype=target_dtype)
 
         if self.is_self_attn:
             attn_out, _ = self.attn(x_norm, x_norm, x_norm)
         else:
-            video_ctx = video_ctx.to(dtype=target_dtype)
             attn_out, _ = self.attn(x_norm, video_ctx, video_ctx)
 
-        x = x + attn_out.to(dtype=x.dtype)
+        x = x + attn_out
         x = x + self.ffn(self.norm_ffn(x))
         return x
 
