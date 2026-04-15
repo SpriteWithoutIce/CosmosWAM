@@ -77,7 +77,12 @@ def main():
             depths = np.stack(depths, axis=0).astype(np.float32)
 
             ep_name = os.path.splitext(os.path.basename(video_path))[0]
-            out_name = f"{ds_name}_{ep_name}_depth.npy"
+            try:
+                ep_idx = int(ep_name)
+            except ValueError:
+                # fallback: strip non-digit prefix/suffix if possible
+                ep_idx = int(''.join(filter(str.isdigit, ep_name)))
+            out_name = f"{ds_name}_episode_{ep_idx:06d}_depth.npy"
             np.save(os.path.join(args.outdir, out_name), depths)
 
     print(f"Done! Saved depth maps to {args.outdir}")
