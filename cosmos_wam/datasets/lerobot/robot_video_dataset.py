@@ -360,7 +360,10 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         filename = f"{ds_name}_episode_{local_ep_idx:06d}_depth.npy"
         depth_path = os.path.join(self.depth_map_dir, filename)
         if not os.path.exists(depth_path):
-            return None
+            # also support per-dataset subfolder structure
+            depth_path = os.path.join(self.depth_map_dir, ds_name, filename)
+            if not os.path.exists(depth_path):
+                return None
 
         depths = np.load(depth_path)
         local_frame_idx = (frame_idx - ep_data["from"][ep_idx]).item()
