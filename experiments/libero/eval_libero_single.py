@@ -38,6 +38,7 @@ from experiments.libero.libero_utils import (
     invert_gripper_action,
     quat2axisangle,
     save_rollout_video,
+    project_and_visualize_current_pose,
 )
 from cosmos_wam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from cosmos_wam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
@@ -296,8 +297,13 @@ def _predict_action_chunk(
     input_h: int,
     device: str,
     online_encoder: OnlineTextEncoder = None,
-) -> np.ndarray:
-    """Predict action chunk from observation."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """Predict action chunk from observation.
+    
+    Returns:
+        action: [T, action_dim] numpy array.
+        debug_img: [H, W, 3] uint8 numpy array with latent query supervision target visualized.
+    """
     num_inference_steps = int(cfg.EVALUATION.get("num_inference_steps", 4))
 
     image, proprio, _ = _obs_to_model_input(
@@ -345,7 +351,19 @@ def _predict_action_chunk(
     if bool(cfg.EVALUATION.get("binarize_gripper", False)):
         action[..., -1] = np.sign(action[..., -1])
     
-    return action
+    # ---- Debug: visualize latent query supervision target (4 keypoints) on primary image ----
+    lqe = model.latent_query_encoder
+    if hasattr(lqe, '_intrinsic') and lqe._intrinsic is not None and lqe._intrinsic.abs().sum().item() > 0:
+        intrinsic = lqe._intrinsic.cpu().numpy()
+        extrinsic = lqe._extrinsic.cpu().numpy()
+        render_h, render_w = lqe._render_h, lqe._render_w
+        debug_img, points_2d = project_and_visualize_current_pose(obs, intrinsic, extrinsic, render_h, render_w)
+        print(f"[DEBUG] Projected 2D points: O={points_2d[0]}, X={points_2d[1]}, Y={points_2d[2]}, Z={points_2d[3]}")
+    else:
+        debug_img = get_libero_image(obs)["image"]
+        print("[DEBUG] Camera params not available in latent_query_encoder, skipping keypoint visualization.")
+    
+    return action, debug_img
 
 
 def run_single_episode(
@@ -361,8 +379,14 @@ def run_single_episode(
     input_h: int,
     device: str,
     online_encoder: OnlineTextEncoder = None,
-) -> tuple[bool, list]:
-    """Run a single episode."""
+) -> tuple[bool, list, list]:
+    """Run a single episode.
+    
+    Returns:
+        success: bool
+        replay_images: list of observation dicts
+        debug_images: list of debug visualization frames
+    """
     max_steps = {
         "libero_spatial": 400,
         "libero_object": 400,
@@ -378,6 +402,7 @@ def run_single_episode(
     obs = env.set_init_state(initial_state)
 
     replay_images = []
+    debug_images = []
     pending_actions = []
     success = False
 
@@ -393,7 +418,7 @@ def run_single_episode(
             continue
 
         if len(pending_actions) == 0:
-            action_chunk = _predict_action_chunk(
+            action_chunk, debug_img = _predict_action_chunk(
                 obs=obs,
                 task_description=task_description,
                 model=model,
@@ -408,9 +433,13 @@ def run_single_episode(
             pending_actions = action_chunk[:replan_steps].tolist()
             imgs = get_libero_image(obs)
             replay_images.append(imgs.copy())
+            debug_images.append(debug_img)
         else:
             imgs = get_libero_image(obs)
             replay_images.append(imgs.copy())
+            # Reuse last debug image for intermediate frames so debug video has same length
+            if len(debug_images) > 0:
+                debug_images.append(debug_images[-1])
 
         obs, _, done, _ = env.step(pending_actions.pop(0))
         
@@ -420,7 +449,7 @@ def run_single_episode(
         t += 1
     
     pbar.close()
-    return success, replay_images
+    return success, replay_images, debug_images
 
 
 def run_single_task(
@@ -446,8 +475,11 @@ def run_single_task(
         "task_description": task_description,
     }
 
+    debug_video_dir = video_dir.parent / "debug_videos"
+    debug_video_dir.mkdir(parents=True, exist_ok=True)
+
     for trial_idx in range(int(cfg.EVALUATION.num_trials)):
-        success, replay_images = run_single_episode(
+        success, replay_images, debug_images = run_single_episode(
             env=env,
             initial_state=initial_states[trial_idx],
             task_description=task_description,
@@ -475,6 +507,13 @@ def run_single_task(
             success=success,
             task_description=task_description,
         )
+        save_rollout_video(
+            debug_video_dir,
+            debug_images,
+            trial_idx,
+            success=success,
+            task_description=f"{task_description}_debug",
+        )
 
     return results
 
@@ -499,7 +538,8 @@ def eval_single_process(cfg: DictConfig):
     from cosmos_wam.models.cosmos_wam import CosmosWAM
     from cosmos_wam.models.dit_wrapper import MiniTrainDIT
     from cosmos_wam.models.vae_wrapper import Wan2pt1VAEInterface
-    from cosmos_wam.models.action_head import ActionDiT
+    from cosmos_wam.models.latent_query import LatentQueryEncoder, TrajectoryHead
+    from cosmos_wam.models.action_head import ActionHeadIMF
     
     # Build model
     vae = Wan2pt1VAEInterface(
@@ -535,21 +575,40 @@ def eval_single_process(cfg: DictConfig):
         use_t_embedding_adaln_lora=cfg.model.dit_config.get("use_t_embedding_adaln_lora", True),
     )
     
-    action_head = ActionDiT(
-        action_dim=cfg.model.action_head.action_dim,
+    latent_query_encoder = LatentQueryEncoder(
+        hidden_dim=cfg.model.latent_query.hidden_dim,
+        num_queries=cfg.model.latent_query.num_queries,
+        sigma=cfg.model.latent_query.sigma,
+        camera_params_path=cfg.model.latent_query.camera_params_path,
+        image_height=cfg.model.latent_query.image_height,
+        image_width=cfg.model.latent_query.image_width,
+    )
+
+    trajectory_head = TrajectoryHead(
+        hidden_dim=cfg.model.trajectory_head.hidden_dim,
+    )
+
+    action_head = ActionHeadIMF(
         hidden_dim=cfg.model.action_head.hidden_dim,
+        action_dim=cfg.model.action_head.action_dim,
+        state_dim=cfg.model.action_head.state_dim,
+        action_horizon=cfg.model.action_head.action_horizon,
         num_layers=cfg.model.action_head.num_layers,
         num_heads=cfg.model.action_head.num_heads,
-        video_dim=cfg.model.action_head.video_dim,
-        mlp_ratio=cfg.model.action_head.get("mlp_ratio", 4.0),
-        actions_per_latent=cfg.model.action_head.get("actions_per_latent", 8),
+        cross_attention_dim=cfg.model.action_head.get("cross_attention_dim", 768),
+        video_ctx_dim=cfg.model.action_head.get("video_ctx_dim", 2048),
+        dropout=cfg.model.action_head.get("dropout", 0.1),
+        final_dropout=cfg.model.action_head.get("final_dropout", True),
     )
-    
+
     model = CosmosWAM(
         dit=dit,
         vae=vae,
+        latent_query_encoder=latent_query_encoder,
+        trajectory_head=trajectory_head,
         action_head=action_head,
         lambda_action=cfg.model.get("lambda_action", 1.0),
+        lambda_traj=cfg.model.get("lambda_traj", 1.0),
         num_cond_frames=cfg.model.get("num_cond_frames", 1),
     )
     model = model.to(device).eval()

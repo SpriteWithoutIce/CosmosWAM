@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw
 import numpy as np
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv, SubprocVectorEnv
+from cosmos_wam.utils.projection import compute_pose_keypoints, project_world_to_pixel
 
 DATE = time.strftime("%Y_%m_%d")
 DATE_TIME = time.strftime("%Y_%m_%d-%H_%M_%S")
@@ -105,3 +106,90 @@ def invert_gripper_action(action):
     """Flips the sign of the gripper action."""
     action[..., -1] = action[..., -1] * -1.0
     return action
+
+
+def quat2euler(quat):
+    """Convert quaternion [x, y, z, w] to ZYX Euler angles [roll, pitch, yaw]."""
+    x, y, z, w = quat
+    # roll (x-axis rotation)
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    # pitch (y-axis rotation)
+    sinp = 2.0 * (w * y - z * x)
+    if sinp >= 1.0:
+        pitch = math.pi / 2
+    elif sinp <= -1.0:
+        pitch = -math.pi / 2
+    else:
+        pitch = math.asin(sinp)
+
+    # yaw (z-axis rotation)
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    return np.array([roll, pitch, yaw], dtype=np.float32)
+
+
+def draw_pose_keypoints_on_image(image_np, points_2d, radius=4, thickness=2):
+    """Draw 4 pose keypoints (origin + XYZ axes) on a numpy image.
+    
+    Args:
+        image_np: [H, W, 3] uint8 numpy array.
+        points_2d: [4, 2] numpy array of (u, v) pixel coordinates.
+                  Order: origin, X-axis, Y-axis, Z-axis.
+    Returns:
+        Annotated image as numpy array.
+    """
+    pil_img = Image.fromarray(image_np.copy())
+    draw = ImageDraw.Draw(pil_img)
+    
+    origin = tuple(points_2d[0].astype(int))
+    px = tuple(points_2d[1].astype(int))
+    py = tuple(points_2d[2].astype(int))
+    pz = tuple(points_2d[3].astype(int))
+    
+    # Draw lines from origin to axis endpoints
+    draw.line([origin, px], fill=(255, 0, 0), width=thickness)   # X: red
+    draw.line([origin, py], fill=(0, 255, 0), width=thickness)   # Y: green
+    draw.line([origin, pz], fill=(0, 0, 255), width=thickness)   # Z: blue
+    
+    # Draw circles at endpoints
+    for pt, color in [(origin, (255, 255, 255)), (px, (255, 0, 0)), (py, (0, 255, 0)), (pz, (0, 0, 255))]:
+        x, y = pt
+        draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color, outline=(0, 0, 0))
+    
+    # Add text labels
+    draw.text((origin[0] + 6, origin[1] - 6), "O", fill=(255, 255, 255))
+    draw.text((px[0] + 6, px[1] - 6), "X", fill=(255, 0, 0))
+    draw.text((py[0] + 6, py[1] - 6), "Y", fill=(0, 255, 0))
+    draw.text((pz[0] + 6, pz[1] - 6), "Z", fill=(0, 0, 255))
+    
+    return np.array(pil_img, dtype=np.uint8)
+
+
+def project_and_visualize_current_pose(obs, intrinsic, extrinsic, render_h, render_w):
+    """Project current eef pose to 2D and draw keypoints on the primary image.
+    
+    Args:
+        obs: LIBERO observation dict.
+        intrinsic: [3, 3] camera intrinsic matrix.
+        extrinsic: [4, 4] camera extrinsic matrix.
+        render_h, render_w: render resolution.
+    
+    Returns:
+        annotated_image: [H, W, 3] uint8 numpy array with keypoints drawn.
+        points_2d: [4, 2] projected 2D points (on render resolution).
+    """
+    eef_pos = obs["robot0_eef_pos"].astype(np.float32)
+    eef_quat = obs["robot0_eef_quat"].astype(np.float32)
+    eef_rpy = quat2euler(eef_quat)
+    
+    points_3d = compute_pose_keypoints(eef_pos, eef_rpy, axis_length=0.1)  # [4, 3]
+    points_2d = project_world_to_pixel(points_3d, intrinsic, extrinsic, render_h, render_w)  # [4, 2]
+    
+    img = get_libero_image(obs)["image"]  # [H, W, 3], already rotated 180
+    annotated = draw_pose_keypoints_on_image(img, points_2d)
+    return annotated, points_2d
