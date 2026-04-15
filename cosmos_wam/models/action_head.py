@@ -67,13 +67,11 @@ class DepthEncoder(nn.Module):
     def forward(self, depth):
         # depth: [B, 1, 224, 224] -> [B, 16, hidden_dim]
         B = depth.shape[0]
-        target_dtype = next(self.parameters()).dtype
-        depth = depth.to(dtype=target_dtype)
 
         x = self.patch_embed(depth).flatten(2).permute(0, 2, 1)  # [B, 256, D]
-        x = x + self.pos_embed.to(dtype=target_dtype)
+        x = x + self.pos_embed
 
-        queries = self.queries.expand(B, -1, -1).to(dtype=target_dtype)
+        queries = self.queries.expand(B, -1, -1)
         for layer in self.layers:
             attn_out, _ = layer["cross_attn"](queries, x, x)
             queries = layer["norm1"](queries + attn_out)
@@ -116,13 +114,11 @@ class ActionEncoderIMF(nn.Module):
         # noisy_action: [B, T, action_dim]
         # r, t: [B]
         B, T, _ = noisy_action.shape
-        target_dtype = next(self.parameters()).dtype
-        noisy_action = noisy_action.to(dtype=target_dtype)
 
-        action_emb = self.action_proj(noisy_action) + self.pos_embed.to(dtype=target_dtype)
+        action_emb = self.action_proj(noisy_action) + self.pos_embed
 
         delta_t = t - r
-        time_emb = self.time_embed(delta_t).to(dtype=target_dtype)
+        time_emb = self.time_embed(delta_t)
         time_emb = time_emb.unsqueeze(1).expand(-1, T, -1)
 
         combined = torch.cat([action_emb, time_emb], dim=-1)
@@ -245,7 +241,7 @@ class ActionHeadIMF(nn.Module):
 
         video_ctx_proj = self.video_ctx_proj(video_ctx)   # [B, 424, D]
 
-        time_emb = self.time_proj(self.time_embed(t - r).to(dtype=next(self.time_proj.parameters()).dtype))  # [B, D]
+        time_emb = self.time_proj(self.time_embed(t - r))  # [B, D]
 
         for block in self.blocks:
             x = block(x, video_ctx_proj, time_emb)
@@ -260,25 +256,29 @@ class ActionHeadIMF(nn.Module):
         """Training: iMF loss"""
         B = actions.shape[0]
         device = actions.device
-        target_dtype = actions.dtype
 
-        # Sample times uniformly (match action dtype for jvp compatibility)
-        t = torch.rand(B, device=device, dtype=target_dtype)
-        r = torch.rand(B, device=device, dtype=target_dtype)
+        # iMF with jvp is unstable under bf16 autocast due to PyTorch functorch limitations.
+        # ActionHead is only ~180M params, so we compute iMF loss in fp32 for numerical stability.
+        actions_f = actions.float()
+        video_ctx_f = video_ctx.float()
+        state_f = state.float()
+        depth_f = depth.float()
 
-        # Construct noisy trajectory
-        noise = torch.randn_like(actions)
-        z_t = (1.0 - t[:, None, None]) * actions + t[:, None, None] * noise
+        t = torch.rand(B, device=device, dtype=torch.float32)
+        r = torch.rand(B, device=device, dtype=torch.float32)
+        noise = torch.randn_like(actions_f)
+        z_t = (1.0 - t[:, None, None]) * actions_f + t[:, None, None] * noise
+
+        def fn(z, r_in, t_in):
+            with torch.autocast(device_type=actions.device.type, enabled=False):
+                return self._forward_once(video_ctx_f, state_f, depth_f, z, r_in, t_in)
 
         # v_theta at (z_t, t, t)
-        v_theta = self._forward_once(video_ctx, state, depth, z_t, t, t)
+        v_theta = fn(z_t, t, t)
 
         # JVP
         primals = (z_t, r, t)
         tangents = (v_theta.detach(), torch.zeros_like(r), torch.ones_like(t))
-
-        def fn(z, r_in, t_in):
-            return self._forward_once(video_ctx, state, depth, z, r_in, t_in)
 
         u, dudt = torch.func.jvp(fn, primals, tangents)
 
@@ -286,7 +286,7 @@ class ActionHeadIMF(nn.Module):
         V = u + (t - r)[:, None, None] * dudt.detach()
 
         # Loss
-        target = noise - actions
+        target = noise - actions_f
         loss = F.mse_loss(V, target)
         return loss
 
