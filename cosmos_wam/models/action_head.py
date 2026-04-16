@@ -268,8 +268,8 @@ class ActionHeadIMF(nn.Module):
         device = actions.device
         dtype = actions.dtype  # bf16
 
-        t = torch.rand(B, device=device, dtype=dtype)
-        r = torch.rand(B, device=device, dtype=dtype)
+        t = torch.rand(B, device=device, dtype=dtype).clamp(min=0.01)  # 避免 t=0
+        r = t * torch.rand(B, device=device, dtype=dtype)  # r ∈ [0, t)
         
         noise = torch.randn_like(actions)
         z_t = (1.0 - t[:, None, None]) * actions + t[:, None, None] * noise
@@ -304,6 +304,9 @@ class ActionHeadIMF(nn.Module):
             self.bfloat16()  # 恢复 bf16
         
         dudt = dudt.detach().to(dtype)
+        
+        # 数值稳定性：clamp dudt
+        dudt = torch.clamp(dudt, -5.0, 5.0)
 
         V = u + (t - r)[:, None, None] * dudt
 
