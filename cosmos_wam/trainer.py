@@ -358,6 +358,7 @@ class CosmosWAMTrainer:
                         pbar.set_postfix({
                             "loss": f"{loss_dict['loss_total']:.3f}",
                             "video": f"{loss_dict['loss_video']:.3f}",
+                            "traj": f"{loss_dict['loss_traj']:.3f}",
                             "action": f"{loss_dict['loss_action']:.3f}",
                             "lr": f"{self.scheduler.get_last_lr()[0]:.2e}",
                             "ETA": eta_str,
@@ -374,12 +375,13 @@ class CosmosWAMTrainer:
                         samples_per_sec = steps_per_sec * self.batch_size * self.accelerator.num_processes
                         
                         logger.info(
-                            "step=%d/%d epoch=%d loss=%.4f video=%.4f action=%.4f lr=%.6f speed=%.2fsteps/s %.2fsamples/s",
+                            "step=%d/%d epoch=%d loss=%.4f video=%.4f traj=%.4f action=%.4f lr=%.6f speed=%.2fsteps/s %.2fsamples/s",
                             self.global_step,
                             total_steps,
                             self.epoch,
                             loss_dict["loss_total"],
                             loss_dict["loss_video"],
+                            loss_dict["loss_traj"],
                             loss_dict["loss_action"],
                             lr,
                             steps_per_sec,
@@ -391,6 +393,7 @@ class CosmosWAMTrainer:
                             swanlab.log({
                                 "train/loss_total": loss_dict["loss_total"].item(),
                                 "train/loss_video": loss_dict["loss_video"].item(),
+                                "train/loss_traj": loss_dict["loss_traj"].item(),
                                 "train/loss_action": loss_dict["loss_action"].item(),
                                 "train/learning_rate": lr,
                                 "train/steps_per_sec": steps_per_sec,
