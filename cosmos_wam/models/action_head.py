@@ -264,32 +264,47 @@ class ActionHeadIMF(nn.Module):
         """Training: iMF loss"""
         B = actions.shape[0]
         device = actions.device
+        original_dtype = actions.dtype
 
         t = torch.rand(B, device=device, dtype=torch.float32)
         r = torch.rand(B, device=device, dtype=torch.float32)
         noise = torch.randn_like(actions)
         z_t = (1.0 - t[:, None, None]) * actions + t[:, None, None] * noise
 
+        # 主计算：u 参与梯度
+        u = self._forward_once(video_ctx, state, depth, z_t, r, t)
+
+        # JVP 计算 dudt：完全独立的计算图
+        with torch.no_grad():
+            # v_theta 用于 tangent
+            v_theta = self._forward_once(video_ctx, state, depth, z_t, t, t)
+        
+        # JVP 需要 enable_grad，但输入都 detach 了
         def fn(z, r_in, t_in):
-            return self._forward_once(video_ctx, state, depth, z, r_in, t_in)
+            return self._forward_once(
+                video_ctx.detach(),
+                state.detach(),
+                depth.detach(),
+                z, r_in, t_in
+            )
+        
+        z_t_detached = z_t.detach()
+        r_detached = r.detach()
+        t_detached = t.detach()
+        
+        primals = (z_t_detached, r_detached, t_detached)
+        tangents = (v_theta, torch.zeros_like(r), torch.ones_like(t))
+        
+        _, dudt = torch.func.jvp(fn, primals, tangents)
+        dudt = dudt.detach()  # 确保不参与外层 backward
 
-        # v_theta at (z_t, t, t)
-        v_theta = fn(z_t, t, t)
+        # 组合
+        V = u + (t - r)[:, None, None].to(original_dtype) * dudt.to(original_dtype)
 
-        # JVP
-        primals = (z_t, r, t)
-        tangents = (v_theta.detach(), torch.zeros_like(r), torch.ones_like(t))
-
-        u, dudt = torch.func.jvp(fn, primals, tangents)
-
-        # Composite V
-        V = u + (t - r)[:, None, None] * dudt.detach()
-
-        # Loss
         target = noise - actions
         loss = F.mse_loss(V, target)
         return loss
-
+    
     @torch.no_grad()
     def predict_action(self, video_ctx, state, depth):
         """Inference: one-step sampling"""
