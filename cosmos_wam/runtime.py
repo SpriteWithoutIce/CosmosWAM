@@ -106,23 +106,6 @@ def run_training(cfg: DictConfig):
         num_cond_frames=cfg.model.get("num_cond_frames", 1),
     )
 
-    # ActionHeadIMF uses torch.func.jvp which is fundamentally incompatible with bf16
-    # in PyTorch functorch. Maintain a separate fp32 copy for training, outside DeepSpeed.
-    action_head_train = ActionHeadIMF(
-        hidden_dim=cfg.model.action_head.hidden_dim,
-        action_dim=cfg.model.action_head.action_dim,
-        state_dim=cfg.model.action_head.get("state_dim", 8),
-        action_horizon=cfg.model.action_head.get("action_horizon", 32),
-        num_layers=cfg.model.action_head.num_layers,
-        num_heads=cfg.model.action_head.num_heads,
-        cross_attention_dim=cfg.model.action_head.get("cross_attention_dim", 768),
-        video_ctx_dim=cfg.model.action_head.get("video_ctx_dim", 2048),
-        dropout=cfg.model.action_head.get("dropout", 0.1),
-        final_dropout=cfg.model.action_head.get("final_dropout", True),
-    ).float().to(device)
-    action_head_train.load_state_dict(action_head.state_dict())
-    print(f"[runtime] ActionHeadIMF fp32 training copy created on {device} (outside DeepSpeed)")
-
     # Enable gradient checkpointing if configured
     if cfg.model.get("enable_gradient_checkpointing", False):
         model.dit.gradient_checkpointing = True
@@ -133,11 +116,5 @@ def run_training(cfg: DictConfig):
     val_dataset = instantiate(cfg.data.get("val", None)) if "val" in cfg.data else None
 
     # 8. Train
-    trainer = CosmosWAMTrainer(
-        model=model,
-        train_dataset=train_dataset,
-        val_dataset=val_dataset,
-        action_head_train=action_head_train,
-        cfg=cfg,
-    )
+    trainer = CosmosWAMTrainer(model=model, train_dataset=train_dataset, val_dataset=val_dataset, cfg=cfg)
     trainer.train()

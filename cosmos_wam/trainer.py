@@ -33,13 +33,12 @@ def set_global_seed(seed: int, get_worker_init_fn: bool = False):
 
 
 class CosmosWAMTrainer:
-    def __init__(self, model, train_dataset, val_dataset=None, action_head_train=None, *, cfg: DictConfig):
+    def __init__(self, model, train_dataset, val_dataset=None, *, cfg: DictConfig):
         self.data_cfg = cfg.data
         cfg = cfg.trainer
         self.model = model
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
-        self.action_head_train = action_head_train
         self.cfg = cfg
         self.output_dir = str(cfg.output_dir)
         self.learning_rate = float(cfg.learning_rate)
@@ -99,15 +98,16 @@ class CosmosWAMTrainer:
         worker_init_fn = set_global_seed(self.seed, get_worker_init_fn=True)
         self.train_loader = self._build_loader(self.train_dataset, worker_init_fn=worker_init_fn)
 
-        # Optimizer: video (dit), latent query, trajectory head go to main optimizer (bf16, DeepSpeed)
-        # action_head_train has its own fp32 optimizer outside DeepSpeed (jvp stability)
+        # Optimizer: different LR for video (dit), latent query, trajectory head, and action head
         video_params = list(self.model.dit.parameters())
         latent_query_params = list(self.model.latent_query_encoder.parameters())
         trajectory_params = list(self.model.trajectory_head.parameters())
+        action_params = list(self.model.action_head.parameters())
         param_groups = [
             {"params": video_params, "lr": self.learning_rate, "weight_decay": self.weight_decay},
             {"params": latent_query_params, "lr": self.learning_rate, "weight_decay": self.weight_decay},
             {"params": trajectory_params, "lr": self.learning_rate, "weight_decay": self.weight_decay},
+            {"params": action_params, "lr": float(cfg.get("action_learning_rate", self.learning_rate)), "weight_decay": self.weight_decay},
         ]
 
         # Print parameter counts
@@ -117,19 +117,17 @@ class CosmosWAMTrainer:
         dit_params = _count_params(video_params)
         lq_params = _count_params(latent_query_params)
         traj_params = _count_params(trajectory_params)
-        act_params = _count_params(self.model.action_head.parameters())
-        act_train_params = _count_params(self.action_head_train.parameters()) if self.action_head_train else 0
-        total_trainable = dit_params + lq_params + traj_params + act_train_params
+        act_params = _count_params(action_params)
+        total_trainable = dit_params + lq_params + traj_params + act_params
         vae_params = _count_params(self.model.vae.parameters()) if hasattr(self.model, "vae") else 0
 
         logger.info(
-            "Model parameters: DiT=%.2fB, LatentQuery=%.2fM, TrajectoryHead=%.2fM, ActionHead(inf)=%.2fM, "
-            "ActionHead(train)=%.2fM, TrainableTotal=%.2fB, VAE(frozen)=%.2fB",
+            "Model parameters: DiT=%.2fB, LatentQuery=%.2fM, TrajectoryHead=%.2fM, ActionHead=%.2fM, "
+            "TrainableTotal=%.2fB, VAE(frozen)=%.2fB",
             dit_params / 1e9,
             lq_params / 1e6,
             traj_params / 1e6,
             act_params / 1e6,
-            act_train_params / 1e6,
             total_trainable / 1e9,
             vae_params / 1e9,
         )
@@ -138,17 +136,6 @@ class CosmosWAMTrainer:
             param_groups,
             betas=(0.9, 0.95),
         )
-
-        if self.action_head_train is not None:
-            self.action_optimizer = torch.optim.AdamW(
-                self.action_head_train.parameters(),
-                lr=float(cfg.get("action_learning_rate", self.learning_rate)),
-                weight_decay=self.weight_decay,
-                betas=(0.9, 0.95),
-            )
-            logger.info("ActionHeadIMF fp32 optimizer created (outside DeepSpeed)")
-        else:
-            self.action_optimizer = None
 
         # Print dataset info
         dataset_size = len(self.train_dataset)
@@ -334,32 +321,16 @@ class CosmosWAMTrainer:
                 self.train_loader.sampler.set_epoch(self.epoch)
             
             self.model.train()
-            if self.action_head_train is not None:
-                self.action_head_train.train()
-                # ensure action_head_train is on the same device as the model outputs
-                model_device = next(self.model.parameters()).device
-                if next(self.action_head_train.parameters()).device != model_device:
-                    self.action_head_train = self.action_head_train.to(model_device)
             epoch_steps = 0
             for batch in self.train_loader:
                 with self.accelerator.accumulate(self.model):
-                    loss, loss_dict = self.model.training_loss(batch, action_head_train=self.action_head_train)
-                    # Separate DiT loss (bf16, DeepSpeed) and action loss (fp32, standalone)
-                    loss_action = loss_dict["loss_action"]
-                    loss_dit = loss - self.model.lambda_action * loss_action
-                    self.accelerator.backward(loss_dit)
-                    if self.action_optimizer is not None:
-                        loss_action.backward()
+                    loss, loss_dict = self.model.training_loss(batch)
+                    self.accelerator.backward(loss)
                     if self.accelerator.sync_gradients:
                         self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                        if self.action_optimizer is not None:
-                            torch.nn.utils.clip_grad_norm_(self.action_head_train.parameters(), self.max_grad_norm)
                     self.optimizer.step()
                     self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
-                    if self.action_optimizer is not None:
-                        self.action_optimizer.step()
-                        self.action_optimizer.zero_grad(set_to_none=True)
 
                 if self.accelerator.sync_gradients:
                     self.global_step += 1
@@ -467,19 +438,15 @@ class CosmosWAMTrainer:
         full_state = unwrapped.state_dict()
         filtered_state = {k: v for k, v in full_state.items() if not k.startswith("vae.")}
         
-        # Convert to bf16 to save space (action_head_train saved separately in fp32)
-        filtered_state_bf16 = {
-            k: v.to(torch.bfloat16) if (v.dtype == torch.float32 and not k.startswith("action_head.")) else v
-            for k, v in filtered_state.items()
-        }
+        # Convert to bf16 to save space (matching original Cosmos checkpoint format)
+        filtered_state_bf16 = {k: v.to(torch.bfloat16) if v.dtype == torch.float32 else v 
+                               for k, v in filtered_state.items()}
         
         state = {
             "model": filtered_state_bf16,
             "step": self.global_step,
             "epoch": self.epoch,
         }
-        if self.action_head_train is not None:
-            state["action_head_train"] = self.action_head_train.state_dict()
         
         torch.save(state, path)
         
@@ -521,11 +488,8 @@ class CosmosWAMTrainer:
         
         # Load model state directly (called before accelerator.prepare(), so model is not wrapped yet)
         missing, unexpected = self.model.load_state_dict(checkpoint["model"], strict=False)
+        
         logger.info("load_state_dict result: missing=%d, unexpected=%d", len(missing), len(unexpected))
-
-        if self.action_head_train is not None and "action_head_train" in checkpoint:
-            aht_missing, aht_unexpected = self.action_head_train.load_state_dict(checkpoint["action_head_train"], strict=False)
-            logger.info("action_head_train load_state_dict result: missing=%d, unexpected=%d", len(aht_missing), len(aht_unexpected))
         if missing:
             logger.warning("Missing keys when loading checkpoint: %s", list(missing)[:10])
         if unexpected:

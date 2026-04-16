@@ -79,7 +79,7 @@ class CosmosWAM(nn.Module):
             "target_trajectory": target_trajectory,
         }
 
-    def training_loss(self, sample: Dict[str, Any], action_head_train: Optional[ActionHeadIMF] = None) -> tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    def training_loss(self, sample: Dict[str, Any]) -> tuple[torch.Tensor, Dict[str, float]]:
         inputs = self.build_inputs(sample)
         latents = inputs["latents"]
         action = inputs["action"]
