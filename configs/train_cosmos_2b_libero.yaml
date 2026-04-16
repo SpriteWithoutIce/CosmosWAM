@@ -147,7 +147,7 @@ trainer:
     warmup_steps: 100
 
     swanlab:
-        enabled: false
+        enabled: true
         project: "cosmos-wam"
         name: null
 

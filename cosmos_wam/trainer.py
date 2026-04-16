@@ -239,6 +239,8 @@ class CosmosWAMTrainer:
         from datetime import datetime
         
         # Extract dataset info from data config
+        model_cfg = self.data_cfg.get("model", {})
+
         data_cfg = self.data_cfg.get("train", {})
         dataset_dirs = data_cfg.get("dataset_dirs", [])
         if dataset_dirs:
@@ -263,7 +265,11 @@ class CosmosWAMTrainer:
         
         # Format: {dataset}_f{frames}_b{batch}_{timestamp}
         # e.g., "libero_f2_b16_0403_1430"
-        run_name = f"{dataset_info}_f{num_cameras}_b{batch_size}_{timestamp}"
+        latent_query = model_cfg.get("latent_query", {})
+        if latent_query:
+            run_name = f"latent_query_imf_{dataset_info}_f{num_cameras}_b{batch_size}_{timestamp}"
+        else:
+            run_name = f"{dataset_info}_f{num_cameras}_b{batch_size}_{timestamp}"
         return run_name
     
     def _estimate_total_steps(self):
