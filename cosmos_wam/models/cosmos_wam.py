@@ -123,8 +123,7 @@ class CosmosWAM(nn.Module):
 
         # -------- Action iMF Loss --------
         video_ctx = torch.cat([cond_hidden, query_hidden], dim=1).detach()
-        aht = action_head_train if action_head_train is not None else self.action_head
-        loss_action = aht(video_ctx, state, depth_map, action)
+        loss_action = self.action_head(video_ctx, state, depth_map, action)
 
         loss = loss_video + self.lambda_traj * loss_traj + self.lambda_action * loss_action
         return loss, {

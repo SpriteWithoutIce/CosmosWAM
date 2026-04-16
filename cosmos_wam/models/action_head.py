@@ -86,16 +86,19 @@ class SinusoidalPositionalEmbedding(nn.Module):
         self.dim = dim
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
-        # t: [B], may be a functorch dual tensor under jvp; avoid dtype casts that break duals
+        original_dtype = t.dtype
+        t = t.float()  # 强制 fp32 计算
+        
         half = self.dim // 2
         device = t.device
         freq = torch.exp(-math.log(10000.0) * torch.arange(half, device=device).float() / max(half - 1, 1))
-        freq = freq.to(dtype=t.dtype)
         args = t[:, None] * freq[None, :]
         emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
+        
         if self.dim % 2 == 1:
             emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
-        return emb
+        
+        return emb.to(original_dtype)  # 转回 bf16
 
 
 class ActionEncoderIMF(nn.Module):
@@ -261,45 +264,48 @@ class ActionHeadIMF(nn.Module):
         return pred
 
     def forward(self, video_ctx, state, depth, actions):
-        """Training: iMF loss"""
         B = actions.shape[0]
         device = actions.device
-        original_dtype = actions.dtype
+        dtype = actions.dtype  # bf16
 
-        t = torch.rand(B, device=device, dtype=torch.float32)
-        r = torch.rand(B, device=device, dtype=torch.float32)
+        t = torch.rand(B, device=device, dtype=dtype)
+        r = torch.rand(B, device=device, dtype=dtype)
+        
         noise = torch.randn_like(actions)
         z_t = (1.0 - t[:, None, None]) * actions + t[:, None, None] * noise
 
-        # 主计算：u 参与梯度
+        # 主前向（bf16，参与梯度）
         u = self._forward_once(video_ctx, state, depth, z_t, r, t)
 
-        # JVP 计算 dudt：完全独立的计算图
         with torch.no_grad():
-            # v_theta 用于 tangent
             v_theta = self._forward_once(video_ctx, state, depth, z_t, t, t)
-        
-        # JVP 需要 enable_grad，但输入都 detach 了
-        def fn(z, r_in, t_in):
-            return self._forward_once(
-                video_ctx.detach(),
-                state.detach(),
-                depth.detach(),
-                z, r_in, t_in
-            )
-        
-        z_t_detached = z_t.detach()
-        r_detached = r.detach()
-        t_detached = t.detach()
-        
-        primals = (z_t_detached, r_detached, t_detached)
-        tangents = (v_theta, torch.zeros_like(r), torch.ones_like(t))
-        
-        _, dudt = torch.func.jvp(fn, primals, tangents)
-        dudt = dudt.detach()  # 确保不参与外层 backward
 
-        # 组合
-        V = u + (t - r)[:, None, None].to(original_dtype) * dudt.to(original_dtype)
+        # ========== JVP：临时转 fp32 ==========
+        self.float()  # 模型转 fp32
+        
+        try:
+            video_ctx_fp32 = video_ctx.detach().float()
+            state_fp32 = state.detach().float()
+            depth_fp32 = depth.detach().float()
+            
+            def fn(z, r_in, t_in):
+                return self._forward_once(
+                    video_ctx_fp32,
+                    state_fp32,
+                    depth_fp32,
+                    z, r_in, t_in
+                )
+            
+            primals = (z_t.detach().float(), r.detach().float(), t.detach().float())
+            tangents = (v_theta.detach().float(), torch.zeros_like(r).float(), torch.ones_like(t).float())
+            
+            _, dudt = torch.func.jvp(fn, primals, tangents)
+        finally:
+            self.bfloat16()  # 恢复 bf16
+        
+        dudt = dudt.detach().to(dtype)
+
+        V = u + (t - r)[:, None, None] * dudt
 
         target = noise - actions
         loss = F.mse_loss(V, target)
