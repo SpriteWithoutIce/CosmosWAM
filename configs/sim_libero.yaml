@@ -177,6 +177,12 @@ EVALUATION:
   # Environment number (currently only 1 is supported)
   env_num: 1
   
+  # Depth-Anything-V2 settings (optional)
+  use_depth_estimator: false
+  depth_anything_encoder: vitb
+  depth_anything_ckpt: null
+  depth_anything_repo: /path/to/Depth-Anything-V2
+  
   # Online text encoder settings (optional)
   use_online_text_encoder: false
   online_text_encoder_path: null

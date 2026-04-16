@@ -17,6 +17,7 @@ LIBERO_PATH = os.environ.get("LIBERO_PATH", "/home/jwhe/linyihan/LIBERO")
 if LIBERO_PATH not in sys.path:
     sys.path.insert(0, LIBERO_PATH)
 
+import cv2
 import hydra
 import numpy as np
 import torch
@@ -171,6 +172,49 @@ DEFAULT_PROMPT = "A video recorded from a robot's point of view executing the fo
 def format_prompt(task: str, template: str) -> str:
     return template.format(task=task)
 
+class DepthEstimator:
+    """Lazy-initialized Depth-Anything-V2 depth estimator."""
+    def __init__(self, encoder: str, ckpt_path: str, repo_path: str, device: str, input_size: int = 518):
+        self.encoder = encoder
+        self.ckpt_path = ckpt_path
+        self.repo_path = repo_path
+        self.device = device
+        self.input_size = input_size
+        self._model = None
+
+    def _init_model(self):
+        if self._model is not None:
+            return
+        if self.repo_path and self.repo_path not in sys.path:
+            sys.path.insert(0, self.repo_path)
+        from depth_anything_v2.dpt import DepthAnythingV2
+        model_configs = {
+            'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
+            'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
+            'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
+            'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]},
+        }
+        self._model = DepthAnythingV2(**model_configs[self.encoder])
+        self._model.load_state_dict(torch.load(self.ckpt_path, map_location="cpu"))
+        self._model = self._model.to(self.device).eval()
+        print(f"[DepthEstimator] Loaded {self.encoder} from {self.ckpt_path}")
+
+    def infer(self, rgb_np: np.ndarray):
+        """Infer depth from wrist image.
+        
+        Args:
+            rgb_np: [H, W, 3] uint8 numpy array (BGR or RGB).
+        Returns:
+            depth: [1, 1, 224, 224] float32 tensor on self.device.
+        """
+        self._init_model()
+        depth = self._model.infer_image(rgb_np, self.input_size)
+        if depth.shape != (224, 224):
+            depth = cv2.resize(depth, (224, 224), interpolation=cv2.INTER_LINEAR)
+        depth = torch.from_numpy(depth).unsqueeze(0).unsqueeze(0).float().to(self.device)
+        return depth
+
+
 class OnlineTextEncoder:
     """Online text encoder for LIBERO (lazy initialization)."""
     
@@ -297,6 +341,7 @@ def _predict_action_chunk(
     input_h: int,
     device: str,
     online_encoder: OnlineTextEncoder = None,
+    depth_estimator: DepthEstimator = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Predict action chunk from observation.
     
@@ -306,7 +351,7 @@ def _predict_action_chunk(
     """
     num_inference_steps = int(cfg.EVALUATION.get("num_inference_steps", 4))
 
-    image, proprio, _ = _obs_to_model_input(
+    image, proprio, imgs = _obs_to_model_input(
         obs, cfg=cfg, processor=processor, width=input_w, height=input_h,
         device=device, dtype=model.model_dtype if hasattr(model, 'model_dtype') else torch.float32
     )
@@ -328,8 +373,12 @@ def _predict_action_chunk(
     # Prepare additional inputs for new architecture
     state = proprio[:, 0, :] if proprio.ndim == 3 else proprio[0, :].unsqueeze(0)
     eef_pos = state[:, :3]
-    # TODO: use real depth from wrist camera via Depth-Anything-V2
-    wrist_depth = torch.zeros(image.shape[0], 1, 224, 224, device=device, dtype=image.dtype)
+    
+    # Depth from wrist camera via Depth-Anything-V2
+    if depth_estimator is not None:
+        wrist_depth = depth_estimator.infer(imgs["wrist_image"])
+    else:
+        wrist_depth = torch.zeros(image.shape[0], 1, 224, 224, device=device, dtype=image.dtype)
 
     # Run inference
     with torch.no_grad():
@@ -379,6 +428,7 @@ def run_single_episode(
     input_h: int,
     device: str,
     online_encoder: OnlineTextEncoder = None,
+    depth_estimator: DepthEstimator = None,
 ) -> tuple[bool, list, list]:
     """Run a single episode.
     
@@ -429,6 +479,7 @@ def run_single_episode(
                 input_h=input_h,
                 device=device,
                 online_encoder=online_encoder,
+                depth_estimator=depth_estimator,
             )
             pending_actions = action_chunk[:replan_steps].tolist()
             imgs = get_libero_image(obs)
@@ -464,6 +515,7 @@ def run_single_task(
     input_h: int,
     device: str,
     online_encoder: OnlineTextEncoder = None,
+    depth_estimator: DepthEstimator = None,
 ) -> dict:
     """Run evaluation for a single task."""
     env, task_description = get_libero_env(task, LIBERO_ENV_RESOLUTION, cfg.get("seed"))
@@ -492,6 +544,7 @@ def run_single_task(
             input_h=input_h,
             device=device,
             online_encoder=online_encoder,
+            depth_estimator=depth_estimator,
         )
         
         if success:
@@ -671,6 +724,22 @@ def eval_single_process(cfg: DictConfig):
         online_encoder = OnlineTextEncoder(online_encoder_path, device=text_enc_device)
         logging.info(f"Using online text encoder on {text_enc_device}")
     
+    # Initialize depth estimator if enabled
+    depth_estimator = None
+    if cfg.EVALUATION.get("use_depth_estimator", False):
+        da_ckpt = cfg.EVALUATION.get("depth_anything_ckpt")
+        da_repo = cfg.EVALUATION.get("depth_anything_repo")
+        da_encoder = cfg.EVALUATION.get("depth_anything_encoder", "vitb")
+        if da_ckpt is None:
+            raise ValueError("depth_anything_ckpt is required when use_depth_estimator=True")
+        depth_estimator = DepthEstimator(
+            encoder=da_encoder,
+            ckpt_path=da_ckpt,
+            repo_path=da_repo,
+            device=device,
+        )
+        logging.info(f"Using Depth-Anything-V2 ({da_encoder}) for wrist depth estimation")
+    
     logging.info("Running LIBERO evaluation")
     task_results = run_single_task(
         task=task,
@@ -684,6 +753,7 @@ def eval_single_process(cfg: DictConfig):
         input_h=input_h,
         device=device,
         online_encoder=online_encoder,
+        depth_estimator=depth_estimator,
     )
     results.update(task_results)
 
