@@ -48,7 +48,7 @@ model:
     hidden_dim: 2048
     num_queries: 32
     sigma: 8.0
-    camera_params_path: /Users/linyihan/Documents/GitHub/CosmosWAM/scripts/gaussian/camera_params.json
+    camera_params_path: /home/jwhe/linyihan/CosmosWAM/scripts/gaussian/camera_params.json
     image_height: 224
     image_width: 224
 
@@ -120,7 +120,7 @@ data:
         - _target_: cosmos_wam.datasets.lerobot.transforms.image.ToTensor
         - _target_: torchvision.transforms.Resize
           size: [224, 224]
-    text_embedding_cache_dir: ./data/text_embeds_cache/libero
+    text_embedding_cache_dir: /home/jwhe/linyihan/datasets/text_embeds_cache/libero
     context_len: 128
     use_text_prompt_template: false  # LIBERO: hash raw task description only
 
@@ -177,11 +177,11 @@ EVALUATION:
   # Environment number (currently only 1 is supported)
   env_num: 1
   
-  # Depth-Anything-V2 settings (optional)
-  use_depth_estimator: false
+  # Depth-Anything-V2 settings
+  use_depth_estimator: true
   depth_anything_encoder: vitb
-  depth_anything_ckpt: null
-  depth_anything_repo: /path/to/Depth-Anything-V2
+  depth_anything_ckpt: /home/jwhe/linyihan/CKPT/depth_anything_v2_vitb.pth
+  depth_anything_repo: /home/jwhe/linyihan/Depth-Anything-V2-main
   
   # Online text encoder settings (optional)
   use_online_text_encoder: false
