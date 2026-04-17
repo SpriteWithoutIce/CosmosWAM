@@ -111,6 +111,22 @@ class TrajectoryHead(nn.Module):
             nn.Linear(hidden_dim // 2, self.NUM_POINTS * heatmap_size * heatmap_size),
         )
 
+    @staticmethod
+    def soft_argmax(heatmap):
+        """heatmap: [..., H, W] -> coords: [..., 2] (x, y)"""
+        *leading, H, W = heatmap.shape
+        device = heatmap.device
+        dtype = heatmap.dtype
+
+        y_grid = torch.arange(H, device=device, dtype=dtype).view(*([1] * len(leading)), H, 1)
+        x_grid = torch.arange(W, device=device, dtype=dtype).view(*([1] * len(leading)), 1, W)
+
+        flat = heatmap.view(*leading, -1)
+        prob = F.softmax(flat, dim=-1).view(*leading, H, W)
+        pred_y = (prob * y_grid).sum(dim=(-2, -1))
+        pred_x = (prob * x_grid).sum(dim=(-2, -1))
+        return torch.stack([pred_x, pred_y], dim=-1)
+
     def forward(self, latent_query_hidden, target_heatmap):
         """
         latent_query_hidden: [B, 32, hidden_dim]
@@ -121,9 +137,9 @@ class TrajectoryHead(nn.Module):
         pred = self.head(latent_query_hidden)  # [B, 32, 4 * H * W]
         pred = pred.view(B, T, self.NUM_POINTS, self.heatmap_size, self.heatmap_size)
         pred = torch.sigmoid(pred)
-        # Cosine similarity as weak supervision.
-        pred_flat = pred.view(B, T, self.NUM_POINTS, -1)
-        target_flat = target_heatmap.view(B, T, self.NUM_POINTS, -1)
-        cos_sim = F.cosine_similarity(pred_flat, target_flat, dim=-1)  # [B, T, NUM_POINTS]
-        loss = 1.0 - cos_sim.mean()
+
+        # Soft-argmax to coordinates: only supervise keypoint locations, not Gaussian shape.
+        pred_coords = self.soft_argmax(pred)
+        target_coords = self.soft_argmax(target_heatmap)
+        loss = F.mse_loss(pred_coords, target_coords)
         return loss
