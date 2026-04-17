@@ -52,10 +52,10 @@ def get_libero_dummy_action():
 def get_libero_image(obs):
     """Extracts image from observations and preprocesses it."""
     img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
-    # IMPORTANT: rotate 180 degrees to match train preprocessing
+    # IMPORTANT: rotate 180 degrees for LIBERO environment compatibility
     
     wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
-    # IMPORTANT: rotate 180 degrees to match train preprocessing
+    # IMPORTANT: rotate 180 degrees for LIBERO environment compatibility
     
     return {
         "image": img,

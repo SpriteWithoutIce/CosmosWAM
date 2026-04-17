@@ -271,7 +271,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         if self._intrinsic is not None and proprio is not None:
             future_proprio = proprio.cpu().numpy()  # [T, 8]
             future_pos = future_proprio[:, :3]   # [T, 3]
-            future_rpy = future_proprio[:, 3:6]  # [T, 3]
+            future_rpy = future_proprio[:, 3:6]  # [T, 3]  (roll, pitch, yaw)
 
             # 1) Compute 4 keypoints per frame
             points_3d = compute_pose_keypoints(future_pos, future_rpy, axis_length=0.1)  # [T, 4, 3]

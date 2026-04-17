@@ -36,8 +36,9 @@ from experiments.libero.libero_utils import (
     get_libero_dummy_action,
     get_libero_env,
     get_libero_image,
+
+    quat2euler,
     invert_gripper_action,
-    quat2axisangle,
     save_rollout_video,
     project_and_visualize_current_pose,
 )
@@ -73,11 +74,14 @@ def _center_crop_resize(image: np.ndarray, width: int, height: int) -> np.ndarra
 
 
 def _extract_sim_state(obs: dict) -> np.ndarray:
-    """Build simulator state from current observation."""
+    """Build simulator state from current observation to match training data.
+    
+    Training uses observation.state = [x, y, z, roll, pitch, yaw, gripper, gripper].
+    """
     state = np.concatenate(
         (
             obs["robot0_eef_pos"],
-            quat2axisangle(obs["robot0_eef_quat"]),
+            quat2euler(obs["robot0_eef_quat"]),
             obs["robot0_gripper_qpos"],
         )
     ).astype(np.float32)
@@ -393,7 +397,7 @@ def _predict_action_chunk(
     # Denormalize action
     action = _denormalize_action(action, processor)[0]
 
-    # Post-process gripper: flip back from dataloader format to env format
+    # Post-process gripper: convert from dataloader format to LIBERO env format
     action[..., -1] = action[..., -1] * 2 - 1
     action = invert_gripper_action(action)
     

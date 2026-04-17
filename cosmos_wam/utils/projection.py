@@ -3,6 +3,35 @@ import numpy as np
 import torch
 
 
+def axis_angle_to_rotation_matrix(axis_angle):
+    """Axis-angle (rodrigues) → 旋转矩阵。
+    Args:
+        axis_angle: [3] or [N, 3]
+    Returns:
+        R: [3, 3] or [N, 3, 3]
+    """
+    if axis_angle.ndim == 1:
+        angle = np.linalg.norm(axis_angle)
+        if angle < 1e-6:
+            return np.eye(3, dtype=axis_angle.dtype)
+        axis = axis_angle / angle
+        x, y, z = axis
+        cos_a = np.cos(angle)
+        sin_a = np.sin(angle)
+        R = np.array([
+            [cos_a + x*x*(1-cos_a), x*y*(1-cos_a) - z*sin_a, x*z*(1-cos_a) + y*sin_a],
+            [y*x*(1-cos_a) + z*sin_a, cos_a + y*y*(1-cos_a), y*z*(1-cos_a) - x*sin_a],
+            [z*x*(1-cos_a) - y*sin_a, z*y*(1-cos_a) + x*sin_a, cos_a + z*z*(1-cos_a)],
+        ], dtype=axis_angle.dtype)
+        return R
+    else:
+        N = axis_angle.shape[0]
+        R = np.zeros((N, 3, 3), dtype=axis_angle.dtype)
+        for i in range(N):
+            R[i] = axis_angle_to_rotation_matrix(axis_angle[i])
+        return R
+
+
 def euler_to_rotation_matrix(roll, pitch, yaw):
     """欧拉角 (roll, pitch, yaw) → 旋转矩阵，ZYX顺序。"""
     cr, sr = np.cos(roll), np.sin(roll)
@@ -34,7 +63,7 @@ def compute_pose_keypoints(eef_pos, eef_rpy, axis_length=0.1):
     """计算夹爪坐标系的 4 个关键点。
     Args:
         eef_pos: [N, 3] 或 [3]
-        eef_rpy: [N, 3] 或 [3]
+        eef_rpy: [N, 3] 或 [3]  (roll, pitch, yaw)
         axis_length: 坐标轴长度（米）
     Returns:
         points: [N, 4, 3] 或 [4, 3]
