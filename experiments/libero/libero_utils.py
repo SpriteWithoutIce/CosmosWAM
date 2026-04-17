@@ -108,31 +108,6 @@ def invert_gripper_action(action):
     return action
 
 
-def quat2euler(quat):
-    """Convert quaternion [x, y, z, w] to ZYX Euler angles [roll, pitch, yaw]."""
-    x, y, z, w = quat
-    # roll (x-axis rotation)
-    sinr_cosp = 2.0 * (w * x + y * z)
-    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-    roll = math.atan2(sinr_cosp, cosr_cosp)
-
-    # pitch (y-axis rotation)
-    sinp = 2.0 * (w * y - z * x)
-    if sinp >= 1.0:
-        pitch = math.pi / 2
-    elif sinp <= -1.0:
-        pitch = -math.pi / 2
-    else:
-        pitch = math.asin(sinp)
-
-    # yaw (z-axis rotation)
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    yaw = math.atan2(siny_cosp, cosy_cosp)
-
-    return np.array([roll, pitch, yaw], dtype=np.float32)
-
-
 def draw_pose_keypoints_on_image(image_np, points_2d, radius=4, thickness=2):
     """Draw 4 pose keypoints (origin + XYZ axes) on a numpy image.
     
@@ -185,9 +160,9 @@ def project_and_visualize_current_pose(obs, intrinsic, extrinsic, render_h, rend
     """
     eef_pos = obs["robot0_eef_pos"].astype(np.float32)
     eef_quat = obs["robot0_eef_quat"].astype(np.float32)
-    eef_rpy = quat2euler(eef_quat)
+    eef_axis_angle = quat2axisangle(eef_quat)
     
-    points_3d = compute_pose_keypoints(eef_pos, eef_rpy, axis_length=0.1)  # [4, 3]
+    points_3d = compute_pose_keypoints(eef_pos, eef_axis_angle, axis_length=0.1)  # [4, 3]
     points_2d = project_world_to_pixel(points_3d, intrinsic, extrinsic, render_h, render_w)  # [4, 2]
     
     img = get_libero_image(obs)["image"]  # [H, W, 3], already rotated 180
