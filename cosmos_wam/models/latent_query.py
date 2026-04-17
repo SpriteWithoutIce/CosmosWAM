@@ -141,5 +141,9 @@ class TrajectoryHead(nn.Module):
         # Soft-argmax to coordinates: only supervise keypoint locations, not Gaussian shape.
         pred_coords = self.soft_argmax(pred)
         target_coords = self.soft_argmax(target_heatmap)
+        # Normalize pixel coordinates [0, H-1] -> [-1, 1] for better loss scale.
+        scale = (self.heatmap_size - 1) / 2.0
+        pred_coords = pred_coords / scale - 1.0
+        target_coords = target_coords / scale - 1.0
         loss = F.mse_loss(pred_coords, target_coords)
         return loss
