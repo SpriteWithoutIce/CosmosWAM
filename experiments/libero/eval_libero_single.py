@@ -407,7 +407,7 @@ def _predict_action_chunk(
         extrinsic = lqe._extrinsic.cpu().numpy()
         render_h, render_w = lqe._render_h, lqe._render_w
         debug_img, points_2d = project_and_visualize_current_pose(obs, intrinsic, extrinsic, render_h, render_w)
-        print(f"[DEBUG] Projected 2D points: O={points_2d[0]}, X={points_2d[1]}, Y={points_2d[2]}, Z={points_2d[3]}")
+        # print(f"[DEBUG] Projected 2D points: O={points_2d[0]}, X={points_2d[1]}, Y={points_2d[2]}, Z={points_2d[3]}")
     else:
         debug_img = get_libero_image(obs)["image"]
         print("[DEBUG] Camera params not available in latent_query_encoder, skipping keypoint visualization.")

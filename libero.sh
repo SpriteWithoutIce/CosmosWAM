@@ -17,11 +17,11 @@ DATASET_STATS="/home/jwhe/linyihan/CosmosWAM/outputs/dataset_stats.json"
 export LIBERO_PATH="${LIBERO_PATH:-/home/jwhe/linyihan/LIBERO}"
 
 # 固定配置
-TASK_SUITE="libero_spatial"
+TASK_SUITE="libero_object"
 NUM_TRIALS=10
 NUM_INFERENCE_STEPS=20
-REPLAN_STEPS=4
-ACTION_HORIZON=8
+REPLAN_STEPS=10
+ACTION_HORIZON=32
 
 # 文本编码器配置
 USE_ONLINE_ENCODER=false
