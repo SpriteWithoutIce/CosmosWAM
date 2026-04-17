@@ -116,12 +116,15 @@ class ActionEncoderIMF(nn.Module):
 
     def forward(self, noisy_action, t):
         # noisy_action: [B, T, action_dim]
-        # t: [B]
+        # t: [B] (discretized integer or continuous float)
         B, T, _ = noisy_action.shape
 
         action_emb = self.action_proj(noisy_action) + self.pos_embed
 
-        time_emb = self.time_embed(t)
+        # Normalize discretized timestep to [0,1) in model dtype so sinusoidal embedding
+        # returns the same dtype (bf16), matching the Linear layers.
+        t_emb_input = t.to(dtype=noisy_action.dtype) / 1000.0
+        time_emb = self.time_embed(t_emb_input)
         time_emb = time_emb.unsqueeze(1).expand(-1, T, -1)
 
         combined = torch.cat([action_emb, time_emb], dim=-1)
@@ -263,7 +266,11 @@ class ActionHeadIMF(nn.Module):
 
         video_ctx_proj = self.video_ctx_proj(video_ctx)   # [B, 424, D]
 
-        time_emb = self.time_proj(self.time_embed(t))  # [B, D]
+        # Normalize discretized timestep to [0,1) in model dtype so sinusoidal embedding
+        # returns the same dtype (bf16), matching the Linear layers.
+        target_dtype = next(self.parameters()).dtype
+        t_emb_input = t.to(dtype=target_dtype) / self.num_timestep_buckets
+        time_emb = self.time_proj(self.time_embed(t_emb_input))  # [B, D]
 
         for block in self.blocks:
             x = block(x, video_ctx_proj, time_emb)
