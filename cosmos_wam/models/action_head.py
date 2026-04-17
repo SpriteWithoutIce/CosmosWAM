@@ -4,6 +4,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import Beta
 
 
 class AdaLayerNorm(nn.Module):
@@ -113,15 +114,14 @@ class ActionEncoderIMF(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
 
-    def forward(self, noisy_action, r, t):
+    def forward(self, noisy_action, t):
         # noisy_action: [B, T, action_dim]
-        # r, t: [B]
+        # t: [B]
         B, T, _ = noisy_action.shape
 
         action_emb = self.action_proj(noisy_action) + self.pos_embed
 
-        delta_t = t - r
-        time_emb = self.time_embed(delta_t)
+        time_emb = self.time_embed(t)
         time_emb = time_emb.unsqueeze(1).expand(-1, T, -1)
 
         combined = torch.cat([action_emb, time_emb], dim=-1)
@@ -190,6 +190,10 @@ class ActionHeadIMF(nn.Module):
         video_ctx_dim=2048,
         dropout=0.1,
         final_dropout=True,
+        noise_beta_alpha=1.5,
+        noise_beta_beta=1.0,
+        noise_s=0.999,
+        num_timestep_buckets=1000,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -197,6 +201,10 @@ class ActionHeadIMF(nn.Module):
         self.action_horizon = action_horizon
         self.num_layers = num_layers
         self.gradient_checkpointing = False
+        self.num_timestep_buckets = num_timestep_buckets
+
+        self.beta_dist = Beta(noise_beta_alpha, noise_beta_beta)
+        self.noise_s = noise_s
 
         # Encoders
         self.state_encoder = StateEncoder(state_dim, hidden_dim)
@@ -235,24 +243,27 @@ class ActionHeadIMF(nn.Module):
         self.proj_out_1 = nn.Linear(hidden_dim, 2 * hidden_dim)
         self.proj_out_2 = nn.Linear(hidden_dim, action_dim)
 
-    def _forward_once(self, video_ctx, state, depth, noisy_action, r, t):
+    def sample_time(self, batch_size, device, dtype):
+        sample = self.beta_dist.sample([batch_size]).to(device, dtype=dtype).clamp(max=self.noise_s)
+        return (self.noise_s - sample) / self.noise_s
+
+    def _forward_once(self, video_ctx, state, depth, noisy_action, t):
         device = next(self.parameters()).device
         video_ctx = video_ctx.to(device)
         state = state.to(device)
         depth = depth.to(device)
         noisy_action = noisy_action.to(device)
-        r = r.to(device)
         t = t.to(device)
 
         state_tokens = self.state_encoder(state)          # [B, 1, D]
         depth_tokens = self.depth_encoder(depth)          # [B, 16, D]
-        action_tokens = self.action_encoder(noisy_action, r, t)  # [B, T, D]
+        action_tokens = self.action_encoder(noisy_action, t)  # [B, T, D]
 
         x = torch.cat([state_tokens, depth_tokens, action_tokens], dim=1)  # [B, 49, D]
 
         video_ctx_proj = self.video_ctx_proj(video_ctx)   # [B, 424, D]
 
-        time_emb = self.time_proj(self.time_embed(t - r))  # [B, D]
+        time_emb = self.time_proj(self.time_embed(t))  # [B, D]
 
         for block in self.blocks:
             x = block(x, video_ctx_proj, time_emb)
@@ -268,55 +279,19 @@ class ActionHeadIMF(nn.Module):
         device = actions.device
         dtype = actions.dtype  # bf16
 
-        t = torch.rand(B, device=device, dtype=dtype).clamp(min=0.01)  # 避免 t=0
-        r = t * torch.rand(B, device=device, dtype=dtype)  # r ∈ [0, t)
-        
+        t = self.sample_time(B, device=device, dtype=dtype)
         noise = torch.randn_like(actions)
         z_t = (1.0 - t[:, None, None]) * actions + t[:, None, None] * noise
+        velocity = actions - noise
 
-        # 主前向（bf16，参与梯度）
-        u = self._forward_once(video_ctx, state, depth, z_t, r, t)
-
-        with torch.no_grad():
-            v_theta = self._forward_once(video_ctx, state, depth, z_t, t, t)
-
-        # ========== JVP：临时转 fp32 ==========
-        self.float()  # 模型转 fp32
-        
-        try:
-            video_ctx_fp32 = video_ctx.detach().float()
-            state_fp32 = state.detach().float()
-            depth_fp32 = depth.detach().float()
-            
-            def fn(z, r_in, t_in):
-                return self._forward_once(
-                    video_ctx_fp32,
-                    state_fp32,
-                    depth_fp32,
-                    z, r_in, t_in
-                )
-            
-            primals = (z_t.detach().float(), r.detach().float(), t.detach().float())
-            tangents = (v_theta.detach().float(), torch.zeros_like(r).float(), torch.ones_like(t).float())
-            
-            _, dudt = torch.func.jvp(fn, primals, tangents)
-        finally:
-            self.bfloat16()  # 恢复 bf16
-        
-        dudt = dudt.detach().to(dtype)
-        
-        # 数值稳定性：clamp dudt
-        dudt = torch.clamp(dudt, -5.0, 5.0)
-
-        V = u + (t - r)[:, None, None] * dudt
-
-        target = noise - actions
-        loss = F.mse_loss(V, target)
+        t_discretized = (t * self.num_timestep_buckets).long()
+        pred = self._forward_once(video_ctx, state, depth, z_t, t_discretized)
+        loss = F.mse_loss(pred, velocity)
         return loss
-    
+
     @torch.no_grad()
-    def predict_action(self, video_ctx, state, depth):
-        """Inference: one-step sampling"""
+    def predict_action(self, video_ctx, state, depth, num_steps=4):
+        """Inference: multi-step Euler integration for flow matching."""
         B = state.shape[0]
         device = state.device
         target_dtype = next(self.parameters()).dtype
@@ -325,9 +300,14 @@ class ActionHeadIMF(nn.Module):
         state = state.to(dtype=target_dtype)
         depth = depth.to(dtype=target_dtype)
 
-        z_1 = torch.randn(B, self.action_horizon, self.action_dim, device=device, dtype=target_dtype)
-        r = torch.zeros(B, device=device, dtype=torch.float32)
-        t = torch.ones(B, device=device, dtype=torch.float32)
+        actions = torch.randn(B, self.action_horizon, self.action_dim, device=device, dtype=target_dtype)
+        dt = 1.0 / num_steps
 
-        u = self._forward_once(video_ctx, state, depth, z_1, r, t)
-        return z_1 - u
+        for i in range(num_steps):
+            t_cont = i / num_steps
+            t_discretized = int(t_cont * self.num_timestep_buckets)
+            t_tensor = torch.full((B,), t_discretized, device=device, dtype=torch.long)
+            pred_velocity = self._forward_once(video_ctx, state, depth, actions, t_tensor)
+            actions = actions + dt * pred_velocity.to(dtype=target_dtype)
+
+        return actions

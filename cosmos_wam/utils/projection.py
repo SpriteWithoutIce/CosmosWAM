@@ -59,11 +59,11 @@ def euler_to_rotation_matrix_batch(rpy):
     return R
 
 
-def compute_pose_keypoints(eef_pos, eef_axis_angle, axis_length=0.1):
+def compute_pose_keypoints(eef_pos, eef_rpy, axis_length=0.1):
     """计算夹爪坐标系的 4 个关键点。
     Args:
         eef_pos: [N, 3] 或 [3]
-        eef_axis_angle: [N, 3] 或 [3]  (axis-angle representation)
+        eef_rpy: [N, 3] 或 [3]  (roll, pitch, yaw)
         axis_length: 坐标轴长度（米）
     Returns:
         points: [N, 4, 3] 或 [4, 3]
@@ -73,7 +73,7 @@ def compute_pose_keypoints(eef_pos, eef_axis_angle, axis_length=0.1):
             - 点 3: Z 轴端点
     """
     if eef_pos.ndim == 1:
-        R = axis_angle_to_rotation_matrix(eef_axis_angle)
+        R = euler_to_rotation_matrix(eef_rpy[0], eef_rpy[1], eef_rpy[2])
         x_axis = R[:, 0]
         y_axis = R[:, 1]
         z_axis = R[:, 2]
@@ -84,7 +84,7 @@ def compute_pose_keypoints(eef_pos, eef_axis_angle, axis_length=0.1):
         return np.stack([p_origin, p_x, p_y, p_z], axis=0)  # [4, 3]
     else:
         N = eef_pos.shape[0]
-        R = axis_angle_to_rotation_matrix(eef_axis_angle)  # [N, 3, 3]
+        R = euler_to_rotation_matrix_batch(eef_rpy)  # [N, 3, 3]
         x_axis = R[:, :, 0]  # [N, 3]
         y_axis = R[:, :, 1]
         z_axis = R[:, :, 2]

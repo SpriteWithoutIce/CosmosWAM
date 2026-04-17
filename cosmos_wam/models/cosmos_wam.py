@@ -121,8 +121,8 @@ class CosmosWAM(nn.Module):
         # -------- Trajectory Supervision --------
         loss_traj = self.trajectory_head(query_hidden, target_trajectory)
 
-        # -------- Action iMF Loss --------
-        video_ctx = torch.cat([cond_hidden, query_hidden], dim=1).detach()
+        # -------- Action Flow Matching Loss --------
+        video_ctx = torch.cat([cond_hidden, query_hidden], dim=1)
         loss_action = self.action_head(video_ctx, state, depth_map, action)
 
         loss = loss_video + self.lambda_traj * loss_traj + self.lambda_action * loss_action

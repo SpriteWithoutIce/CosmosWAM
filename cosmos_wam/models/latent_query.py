@@ -121,5 +121,9 @@ class TrajectoryHead(nn.Module):
         pred = self.head(latent_query_hidden)  # [B, 32, 4 * H * W]
         pred = pred.view(B, T, self.NUM_POINTS, self.heatmap_size, self.heatmap_size)
         pred = torch.sigmoid(pred)
-        loss = F.mse_loss(pred, target_heatmap)
+        # Cosine similarity as weak supervision.
+        pred_flat = pred.view(B, T, self.NUM_POINTS, -1)
+        target_flat = target_heatmap.view(B, T, self.NUM_POINTS, -1)
+        cos_sim = F.cosine_similarity(pred_flat, target_flat, dim=-1)  # [B, T, NUM_POINTS]
+        loss = 1.0 - cos_sim.mean()
         return loss
