@@ -128,9 +128,9 @@ trainer:
     learning_rate: 1.0e-4
     action_learning_rate: 1.0e-4
     weight_decay: 1.0e-2
-    batch_size: 32
+    batch_size: 16
     num_workers: 16
-    num_epochs: 10
+    num_epochs: 15
     max_steps: null
     log_every: 10
     save_every: 2000
@@ -147,7 +147,7 @@ trainer:
     warmup_steps: 100
 
     swanlab:
-        enabled: true
+        enabled: false
         project: "cosmos-wam"
         name: null
 
