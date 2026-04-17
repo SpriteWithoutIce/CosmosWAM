@@ -157,6 +157,13 @@ class CosmosWAM(nn.Module):
         device = first_frame_pixels.device
         dtype = next(self.dit.parameters()).dtype
 
+        # Ensure all inputs are on the correct device and dtype
+        first_frame_pixels = first_frame_pixels.to(device=device, dtype=dtype)
+        wrist_depth = wrist_depth.to(device=device, dtype=dtype)
+        state = state.to(device=device, dtype=dtype)
+        eef_pos = eef_pos.to(device=device, dtype=dtype)
+        context = context.to(device=device, dtype=dtype)
+
         # Encode first frame
         latents = self.vae.encode(first_frame_pixels)
         first_frame_latent = latents[:, :, :1, :, :]
@@ -174,7 +181,6 @@ class CosmosWAM(nn.Module):
         latent_query = self.latent_query_encoder(eef_pos.to(dtype=dtype))
 
         # DiT forward (condition only)
-        context = context.to(dtype=dtype)
         _, cond_hidden, _, query_hidden = self.dit(
             x_B_C_T_H_W=first_frame_latent.to(dtype=dtype),
             timesteps_B_T=torch.zeros(B, 1, device=device, dtype=dtype),
