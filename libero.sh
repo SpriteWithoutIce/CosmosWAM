@@ -12,7 +12,7 @@ export CUDA_VISIBLE_DEVICES=$GPU_ID
 export MUJOCO_EGL_DEVICE_ID=0  # EGL 始终用 0（因为 CUDA_VISIBLE_DEVICES 只暴露一块 GPU）
 
 # 其他配置
-CKPT="/home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260416_121643/checkpoints/final.pt"
+CKPT="/home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260417_184602/checkpoints/step_0040000.pt"
 DATASET_STATS="/home/jwhe/linyihan/CosmosWAM/outputs/dataset_stats.json"
 export LIBERO_PATH="${LIBERO_PATH:-/home/jwhe/linyihan/LIBERO}"
 
