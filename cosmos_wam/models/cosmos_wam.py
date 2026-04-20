@@ -46,7 +46,6 @@ class CosmosWAM(nn.Module):
         Returns:
             two_view_video: [B, C, 2, H, W] where T=2 is [main_view, wrist_view]
         """
-        # print("cosmoswam video shape: ",video.shape)
         if video.ndim == 5:
             # Single camera format: [B, C, T, H, W]
             # Take frame 0 as main view. If wrist is not available, replicate frame 0.

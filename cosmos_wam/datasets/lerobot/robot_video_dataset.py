@@ -197,7 +197,6 @@ class RobotVideoDataset(torch.utils.data.Dataset):
                 video = torch.cat([video[i] for i in range(num_cameras)], dim=-2)  # [T_video, C, num_cameras*H, W]
             elif self.concat_multi_camera is None or self.concat_multi_camera == "none":
                 # Keep multi-camera dimension: [num_cameras, T_video, C, H, W]
-                print(video.shape)
                 pass
             else:
                 raise ValueError(
