@@ -86,16 +86,20 @@ class CosmosWAM(nn.Module):
         with torch.no_grad():
             # Extract two views and stack as temporal frames for VAE
             two_view_video = self._extract_two_views(video.to(device=dit_device, dtype=torch.float32))
-            # VAE temporal conv requires temporal dim >= kernel_size (3).
-            # If T < 4, replicate frames to avoid RuntimeError.
-            if two_view_video.shape[2] < 4:
-                repeat_factor = (4 + two_view_video.shape[2] - 1) // two_view_video.shape[2]
-                two_view_video = two_view_video.repeat(1, 1, repeat_factor, 1, 1)[:, :, :4, :, :]
+            
+            # Split two views and repeat the second view 4 times
+            view0 = two_view_video[:, :, 0:1, :, :]   # [B, 3, 1, H, W]
+            view1 = two_view_video[:, :, 1:2, :, :]   # [B, 3, 1, H, W]
+            view1_repeated = view1.repeat(1, 1, 4, 1, 1)  # [B, 3, 4, H, W]
+            
+            # Concat: 1 + 4 = 5 frames
+            two_view_video = torch.cat([view0, view1_repeated], dim=2)  # [B, 3, 5, H, W]
+            
             # VAE encode - VAE uses its own dtype
             latents = self.vae.encode(two_view_video)  # [B, C_latent, T_latent, H_latent, W_latent]
+            
             # Move to DiT's device and convert to DiT's dtype
             latents = latents.to(device=dit_device, dtype=dit_dtype)
-        
         # Pad latents from 16 to 18 channels to match Cosmos checkpoint
         if latents.shape[1] == 16:
             padding = torch.zeros(latents.shape[0], 2, *latents.shape[2:], 
@@ -140,7 +144,7 @@ class CosmosWAM(nn.Module):
             cosmos_layer_idx = 14 + action_layer_idx
             layer_hidden = hidden_list[cosmos_layer_idx]  # [B, T*H*W, D]
             B_actual, N, D_vid = layer_hidden.shape
-            assert N == B_actual * T_int * H_int * W_int, (
+            assert N == T_int * H_int * W_int, (
                 f"Hidden state size mismatch: N={N}, expected {B_actual}*{T_int}*{H_int}*{W_int}"
             )
             layer_grid = layer_hidden.view(B_actual, T_int, H_int, W_int, D_vid)
