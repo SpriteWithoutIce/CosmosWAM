@@ -44,6 +44,8 @@ model:
     video_dim: 2048
     mlp_ratio: 4.0
     actions_per_latent: 8
+    state_dim: 8             # LIBERO proprioception state dimension
+    num_future_tokens: 32    # number of learnable future query tokens (like starVLA)
 
 data:
   train:
@@ -109,9 +111,9 @@ data:
 
 trainer:
   output_dir: ${output_dir}
-  learning_rate: 2.5e-05
-  action_learning_rate: 1e-4
-  weight_decay: 1.0e-2
+  learning_rate: 1.0e-05      # DiT backbone lr (like starVLA)
+  action_learning_rate: 1.0e-04  # Action head lr (like starVLA)
+  weight_decay: 1.0e-08       # Match starVLA optimizer weight_decay
   batch_size: 32
   num_workers: 16
   num_epochs: 10
@@ -126,7 +128,12 @@ trainer:
   mixed_precision: "bf16"
   
   lr_schedule: "cosine"
-  warmup_steps: 100
+  warmup_steps: 500
+  min_lr: 1.0e-06
+  
+  optimizer:
+    betas: [0.9, 0.95]
+    eps: 1.0e-08
   
   swanlab:
     enabled: false

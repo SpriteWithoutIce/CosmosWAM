@@ -146,31 +146,37 @@ data:
 
 trainer:
   output_dir: ${output_dir}
-  learning_rate: 2.0e-4
-  action_learning_rate: 2.0e-4
-  weight_decay: 0.0
-  batch_size: 16              # 单相机可以增大batch_size
+  learning_rate: 1.0e-05      # DiT backbone lr (like starVLA qwen_vl_interface)
+  action_learning_rate: 1.0e-04  # Action head lr (like starVLA action_model)
+  weight_decay: 1.0e-08       # Match starVLA optimizer weight_decay
+  batch_size: 16
   num_workers: 4
   num_epochs: 20
   max_steps: null  # null: train by epochs; set number: train by steps
   log_every: 10
   save_every: 2000
   eval_every: 2500
-  gradient_accumulation_steps: 1   # 不需要grad accumulation
+  gradient_accumulation_steps: 1
   max_grad_norm: 1.0
   seed: ${seed}
   resume: false
-  mixed_precision: "no"  # 关闭混合精度以避免 dtype 不匹配问题
+  mixed_precision: "no"
   
   # Learning rate schedule: "cosine" (default) or "constant"
-  lr_schedule: "constant"  # warmup后保持常数学习率
-  warmup_steps: 100         # warmup 步数，之后保持 learning_rate 不变
+  lr_schedule: "cosine"
+  warmup_steps: 500           # Larger warmup to match starVLA style
+  min_lr: 1.0e-06             # Cosine min lr (like starVLA scheduler_specific_kwargs.min_lr)
+  
+  # Optimizer settings matching starVLA
+  optimizer:
+    betas: [0.9, 0.95]
+    eps: 1.0e-08
   
   # Weights & Biases logging
   wandb:
-    enabled: true           # 设置为 true 启用 wandb
-    project: "cosmos-wam-robotwin"  # wandb 项目名称
-    name: null              # 实验名称，null 则自动生成
+    enabled: true
+    project: "cosmos-wam-robotwin"
+    name: null
   
   deepspeed:
     zero_optimization:

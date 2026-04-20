@@ -111,9 +111,15 @@ class CosmosWAMTrainer:
             {"params": action_params, "lr": float(cfg.get("action_learning_rate", self.learning_rate)), "weight_decay": self.weight_decay},
         ]
 
+        # Read optimizer-specific settings from config
+        opt_cfg = cfg.get("optimizer", {})
+        adam_betas = tuple(opt_cfg.get("betas", [0.9, 0.95]))
+        adam_eps = float(opt_cfg.get("eps", 1.0e-08))
+        
         self.optimizer = torch.optim.AdamW(
             param_groups,
-            betas=(0.9, 0.95),
+            betas=adam_betas,
+            eps=adam_eps,
         )
 
         # Print dataset info
@@ -255,6 +261,7 @@ class CosmosWAMTrainer:
         
         # Get scheduler type from config (cosine or constant)
         lr_schedule = self.cfg.get("lr_schedule", "cosine")
+        min_lr_ratio = self.cfg.get("min_lr", 0.0) / self.learning_rate if self.learning_rate > 0 else 0.0
         
         if lr_schedule == "constant":
             # Constant LR with warmup: warmup for warmup_steps, then keep constant
@@ -263,12 +270,14 @@ class CosmosWAMTrainer:
                     return float(step) / float(max(1, warmup_steps))
                 return 1.0  # Keep constant after warmup
         else:
-            # Cosine annealing with warmup (default)
+            # Cosine annealing with warmup (default), matching starVLA's cosine_with_min_lr
             def lr_lambda(step):
                 if step < warmup_steps:
                     return float(step) / float(max(1, warmup_steps))
                 progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-                return 0.5 * (1.0 + math.cos(math.pi * progress))
+                # cosine from 1.0 down to min_lr_ratio
+                cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+                return min_lr_ratio + (1.0 - min_lr_ratio) * cosine_decay
 
         return LambdaLR(optimizer, lr_lambda)
 
@@ -330,7 +339,6 @@ class CosmosWAMTrainer:
                         # Update progress bar postfix
                         pbar.set_postfix({
                             "loss": f"{loss_dict['loss_total']:.3f}",
-                            "video": f"{loss_dict['loss_video']:.3f}",
                             "action": f"{loss_dict['loss_action']:.3f}",
                             "lr": f"{self.scheduler.get_last_lr()[0]:.2e}",
                             "ETA": eta_str,
@@ -347,12 +355,11 @@ class CosmosWAMTrainer:
                         samples_per_sec = steps_per_sec * self.batch_size * self.accelerator.num_processes
                         
                         logger.info(
-                            "step=%d/%d epoch=%d loss=%.4f video=%.4f action=%.4f lr=%.6f speed=%.2fsteps/s %.2fsamples/s",
+                            "step=%d/%d epoch=%d loss=%.4f action=%.4f lr=%.6f speed=%.2fsteps/s %.2fsamples/s",
                             self.global_step,
                             total_steps,
                             self.epoch,
                             loss_dict["loss_total"],
-                            loss_dict["loss_video"],
                             loss_dict["loss_action"],
                             lr,
                             steps_per_sec,
@@ -363,7 +370,6 @@ class CosmosWAMTrainer:
                         if self.use_swanlab:
                             swanlab.log({
                                 "train/loss_total": loss_dict["loss_total"].item(),
-                                "train/loss_video": loss_dict["loss_video"].item(),
                                 "train/loss_action": loss_dict["loss_action"].item(),
                                 "train/learning_rate": lr,
                                 "train/steps_per_sec": steps_per_sec,
