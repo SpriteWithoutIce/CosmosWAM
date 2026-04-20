@@ -343,6 +343,7 @@ class CosmosWAMTrainer:
                         # Update progress bar postfix
                         pbar.set_postfix({
                             "loss": f"{loss_dict['loss_total']:.3f}",
+                            "video": f"{loss_dict.get('loss_video', 0.0):.3f}",
                             "action": f"{loss_dict['loss_action']:.3f}",
                             "lr": f"{self.scheduler.get_last_lr()[0]:.2e}",
                             "ETA": eta_str,
@@ -359,11 +360,12 @@ class CosmosWAMTrainer:
                         samples_per_sec = steps_per_sec * self.batch_size * self.accelerator.num_processes
                         
                         logger.info(
-                            "step=%d/%d epoch=%d loss=%.4f action=%.4f lr=%.6f speed=%.2fsteps/s %.2fsamples/s",
+                            "step=%d/%d epoch=%d loss=%.4f video=%.4f action=%.4f lr=%.6f speed=%.2fsteps/s %.2fsamples/s",
                             self.global_step,
                             total_steps,
                             self.epoch,
                             loss_dict["loss_total"],
+                            loss_dict.get("loss_video", 0.0),
                             loss_dict["loss_action"],
                             lr,
                             steps_per_sec,
@@ -374,6 +376,7 @@ class CosmosWAMTrainer:
                         if self.use_swanlab:
                             swanlab.log({
                                 "train/loss_total": loss_dict["loss_total"].item(),
+                                "train/loss_video": loss_dict.get("loss_video", torch.tensor(0.0)).item(),
                                 "train/loss_action": loss_dict["loss_action"].item(),
                                 "train/learning_rate": lr,
                                 "train/steps_per_sec": steps_per_sec,
