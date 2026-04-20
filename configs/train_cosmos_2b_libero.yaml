@@ -8,12 +8,13 @@ model:
   enable_gradient_checkpointing: true
   compile: false                          # H100 使用 torch.compile 加速
   lambda_action: 1.0
+  lambda_video: 0.5
   num_cond_frames: 1
   vae_temporal_window: 16
 
   dit_config:
     max_img_h: 224
-    max_img_w: 224
+    max_img_w: 448
     max_frames: 128
     in_channels: 18
     out_channels: 16
@@ -76,11 +77,11 @@ data:
     num_frames: 9
     global_sample_stride: 1
     action_video_freq_ratio: 1
-    video_size: [224, 224]          # Single camera 224x224
+    video_size: [224, 448]          # 2 cameras 224x224 each, concatenated horizontally -> 224x448
     val_set_proportion: 0.0
     is_training_set: true
     skip_padding_as_possible: false
-    concat_multi_camera: none
+    concat_multi_camera: "horizontal"
     processor:
       _target_: cosmos_wam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
       shape_meta: ${data.train.shape_meta}
@@ -138,7 +139,7 @@ trainer:
   swanlab:
     enabled: true
     project: "cosmos-wam"
-    name: "4suites_f2_b32_encoder"
+    name: "4suites_f2_b32_encoder_video"
   
   deepspeed:
     zero_optimization:

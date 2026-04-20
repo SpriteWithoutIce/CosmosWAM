@@ -89,6 +89,7 @@ def run_training(cfg: DictConfig):
         vae=vae,
         action_head=action_head,
         lambda_action=cfg.model.get("lambda_action", 1.0),
+        lambda_video=cfg.model.get("lambda_video", 1.0),
         num_cond_frames=cfg.model.get("num_cond_frames", 1),
     )
 

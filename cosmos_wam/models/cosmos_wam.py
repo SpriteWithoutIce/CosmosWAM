@@ -16,6 +16,7 @@ class CosmosWAM(nn.Module):
         vae: VideoTokenizerInterface,
         action_head: ActionDiT,
         lambda_action: float = 1.0,
+        lambda_video: float = 0.5,
         num_cond_frames: int = 1,
     ):
         super().__init__()
@@ -23,6 +24,7 @@ class CosmosWAM(nn.Module):
         self.vae = vae
         self.action_head = action_head
         self.lambda_action = float(lambda_action)
+        self.lambda_video = float(lambda_video)
         self.num_cond_frames = int(num_cond_frames)
 
         # Register forward hooks on blocks[14:28] to capture hidden states
@@ -68,7 +70,7 @@ class CosmosWAM(nn.Module):
             )
 
     def build_inputs(self, sample: Dict[str, Any]) -> Dict[str, Any]:
-        video = sample["video"]              # [B, C, T, H, W] or [B, C, num_cameras, T, H, W]
+        video = sample["video"]              # [B, C, T, H, W] (already concatenated by dataset)
         action = sample["action"]            # [B, Ta, action_dim]
         context = sample["context"]          # [B, L, D]
         proprio = sample.get("proprio", None)
@@ -84,22 +86,16 @@ class CosmosWAM(nn.Module):
             proprio = proprio.to(device=dit_device, dtype=dit_dtype)
 
         with torch.no_grad():
-            # Extract two views and stack as temporal frames for VAE
-            two_view_video = self._extract_two_views(video.to(device=dit_device, dtype=torch.float32))
-            
-            # Split two views and repeat the second view 4 times
-            view0 = two_view_video[:, :, 0:1, :, :]   # [B, 3, 1, H, W]
-            view1 = two_view_video[:, :, 1:2, :, :]   # [B, 3, 1, H, W]
-            view1_repeated = view1.repeat(1, 1, 4, 1, 1)  # [B, 3, 4, H, W]
-            
-            # Concat: 1 + 4 = 5 frames
-            two_view_video = torch.cat([view0, view1_repeated], dim=2)  # [B, 3, 5, H, W]
-            
+            video_input = video.to(device=dit_device, dtype=torch.float32)
+            # VAE temporal conv requires T >= kernel_size(3). Pad if needed.
+            if video_input.shape[2] < 4:
+                repeat_factor = (4 + video_input.shape[2] - 1) // video_input.shape[2]
+                video_input = video_input.repeat(1, 1, repeat_factor, 1, 1)[:, :, :4, :, :]
             # VAE encode - VAE uses its own dtype
-            latents = self.vae.encode(two_view_video)  # [B, C_latent, T_latent, H_latent, W_latent]
-            
+            latents = self.vae.encode(video_input)  # [B, C_latent, T_latent, H_latent, W_latent]
             # Move to DiT's device and convert to DiT's dtype
             latents = latents.to(device=dit_device, dtype=dit_dtype)
+        
         # Pad latents from 16 to 18 channels to match Cosmos checkpoint
         if latents.shape[1] == 16:
             padding = torch.zeros(latents.shape[0], 2, *latents.shape[2:], 
@@ -114,29 +110,54 @@ class CosmosWAM(nn.Module):
 
     def training_loss(self, sample: Dict[str, Any]) -> tuple[torch.Tensor, Dict[str, float]]:
         inputs = self.build_inputs(sample)
-        latents = inputs["latents"]          # [B, C, T_latent, H_latent, W_latent]
+        latents = inputs["latents"]          # [B, 18, T_latent, H_latent, W_latent]
         action = inputs["action"]            # [B, Ta, action_dim]
         context = inputs["context"]          # [B, L, D]
         proprio = inputs["proprio"]          # [B, num_obs_steps, state_dim] or None
         B = latents.shape[0]
         device = latents.device
         dtype = latents.dtype
+        T_lat = latents.shape[2]
 
-        # -------- DiT Encoder-only forward (no video denoising) --------
-        # Use timestep=0 for clean feature extraction
-        timesteps = torch.zeros(B, 1, device=device, dtype=dtype)
-
+        # -------- Video Flow Matching --------
+        # Sample noise for latent channels (first 16 ch)
+        noise_z = torch.randn(B, 16, T_lat, latents.shape[3], latents.shape[4],
+                              device=device, dtype=torch.float32)
+        
+        # Target velocity: v = latent - noise
+        target_v = latents[:, :16, ...].float() - noise_z  # [B, 16, T, H, W]
+        
+        # Sample timestep
+        t_video = torch.rand(B, device=device, dtype=torch.float32)
+        t_expanded = t_video.view(B, 1, 1, 1, 1)
+        
+        # Noisy latent: x_t = (1-t) * noise + t * latent
+        noisy_latent = (1 - t_expanded) * noise_z + t_expanded * latents[:, :16, ...].float()
+        
+        # Keep condition frame clean (first latent frame)
+        noisy_latent[:, :, 0:1, :, :] = latents[:, :16, 0:1, :, :].float()
+        
+        # Concat padding mask channels back
+        noisy_input = torch.cat([noisy_latent, latents[:, 16:, ...]], dim=1).to(dtype=dtype)
+        
         # DiT forward, collecting all intermediate hidden states
-        _, hidden_list = self.dit(
-            x_B_C_T_H_W=latents,
-            timesteps_B_T=timesteps,
+        pred, hidden_list = self.dit(
+            x_B_C_T_H_W=noisy_input,
+            timesteps_B_T=t_video,
             crossattn_emb=context,
             intermediate_feature_ids=list(range(self.dit.num_blocks)),
         )
+        
+        # Video loss: only on generation frames (index >= 1)
+        pred_v = pred[:, :16, ...]  # [B, 16, T, H, W]
+        loss_video_raw = F.mse_loss(pred_v, target_v.to(dtype=dtype), reduction='none')
+        video_mask = torch.zeros(B, 1, T_lat, 1, 1, device=device, dtype=dtype)
+        video_mask[:, :, 1:, :, :] = 1.0  # mask out condition frame
+        loss_video = (loss_video_raw * video_mask).mean()
 
-        # Extract hidden states from blocks[14:28] for action head
+        # -------- Extract hidden states for action head (only condition frame) --------
         video_cond_list: List[torch.Tensor] = []
-        T_lat, H_lat, W_lat = latents.shape[2], latents.shape[3], latents.shape[4]
+        H_lat, W_lat = latents.shape[3], latents.shape[4]
         H_int = H_lat // self.dit.patch_spatial
         W_int = W_lat // self.dit.patch_spatial
         T_int = T_lat // self.dit.patch_temporal
@@ -148,7 +169,9 @@ class CosmosWAM(nn.Module):
                 f"Hidden state size mismatch: N={N}, expected {T_int}*{H_int}*{W_int}={T_int * H_int * W_int}"
             )
             layer_grid = layer_hidden.view(B_actual, T_int, H_int, W_int, D_vid)
-            video_cond_list.append(layer_grid)
+            # Only take condition frame (first temporal position)
+            cond_grid = layer_grid[:, 0:1, ...]  # [B, 1, H, W, D]
+            video_cond_list.append(cond_grid)
 
         # -------- Action Rectified Flow --------
         noise_a = torch.randn_like(action)
@@ -167,9 +190,11 @@ class CosmosWAM(nn.Module):
         pred_action = self.action_head(noisy_action, video_cond_list, t_action, state=state)
         loss_action = F.mse_loss(pred_action, target_a)
 
-        return loss_action, {
+        loss_total = self.lambda_video * loss_video + self.lambda_action * loss_action
+        return loss_total, {
+            "loss_video": loss_video.detach(),
             "loss_action": loss_action.detach(),
-            "loss_total": loss_action.detach(),
+            "loss_total": loss_total.detach(),
         }
 
     @torch.no_grad()
@@ -180,48 +205,35 @@ class CosmosWAM(nn.Module):
         context: torch.Tensor,
         num_inference_steps: int = 20,
     ) -> torch.Tensor:
-        """Inference: given first frame(s), predict action sequence.
+        """Inference: given condition frame(s), predict action sequence.
         
         Args:
             first_frame_pixels: 
-                - [B, C, H, W] single image
-                - [B, C, 1, H, W] single view with temporal dim (from deploy_policy)
-                - [B, num_cameras, C, H, W] multi-view images
+                - [B, C, H, W] single concatenated image (horizontal concat of 2 cameras)
+                - [B, C, 1, H, W] with temporal dim
         """
         self.eval()
         device = first_frame_pixels.device
 
-        # Normalize input to two-view temporal format [B, C, 2, H, W]
+        # Add temporal dim if needed
         if first_frame_pixels.ndim == 4:
-            # [B, C, H, W] -> add temporal dim and replicate
-            two_view = first_frame_pixels.unsqueeze(2).repeat(1, 1, 2, 1, 1)  # [B, C, 2, H, W]
+            video_input = first_frame_pixels.unsqueeze(2)  # [B, C, 1, H, W]
         elif first_frame_pixels.ndim == 5:
-            if first_frame_pixels.shape[2] == 1:
-                # [B, C, 1, H, W] from deploy_policy -> replicate to T=2
-                two_view = first_frame_pixels.repeat(1, 1, 2, 1, 1)  # [B, C, 2, H, W]
-            elif first_frame_pixels.shape[1] in (2, 3):
-                # [B, num_cameras, C, H, W] multi-view -> permute to temporal
-                # Assume num_cameras is small (2 or 3), treat cameras as temporal frames
-                two_view = first_frame_pixels.permute(0, 2, 1, 3, 4)  # [B, C, num_cameras, H, W]
-            else:
-                raise ValueError(
-                    f"Unexpected 5D first_frame_pixels shape {tuple(first_frame_pixels.shape)}. "
-                    "Expected [B, C, 1, H, W] or [B, num_cameras, C, H, W]."
-                )
+            video_input = first_frame_pixels  # [B, C, T, H, W]
         else:
             raise ValueError(
                 f"Unexpected first_frame_pixels ndim={first_frame_pixels.ndim}, shape {tuple(first_frame_pixels.shape)}"
             )
 
-        B = two_view.shape[0]
+        B = video_input.shape[0]
 
         # VAE temporal conv requires T >= 4; replicate if needed
-        if two_view.shape[2] < 4:
-            repeat_factor = (4 + two_view.shape[2] - 1) // two_view.shape[2]
-            two_view = two_view.repeat(1, 1, repeat_factor, 1, 1)[:, :, :4, :, :]
+        if video_input.shape[2] < 4:
+            repeat_factor = (4 + video_input.shape[2] - 1) // video_input.shape[2]
+            video_input = video_input.repeat(1, 1, repeat_factor, 1, 1)[:, :, :4, :, :]
         
         # VAE encode
-        latents = self.vae.encode(two_view)  # [B, C, T_latent, H, W]
+        latents = self.vae.encode(video_input)  # [B, C, T_latent, H, W]
 
         # Pad latents from 16 to 18 channels to match Cosmos checkpoint
         if latents.shape[1] == 16:
@@ -232,7 +244,7 @@ class CosmosWAM(nn.Module):
             )
             latents = torch.cat([latents, padding], dim=1)  # [B, 18, T_latent, H, W]
 
-        # Run dit once to populate video features cache
+        # Run dit clean pass (t=0) to extract features from condition frame
         context_dtype = next(self.dit.parameters()).dtype
         _ = self.dit(
             x_B_C_T_H_W=latents,
@@ -240,15 +252,17 @@ class CosmosWAM(nn.Module):
             crossattn_emb=context.to(dtype=context_dtype),
             intermediate_feature_ids=list(range(self.dit.num_blocks)),
         )
-        video_cond_cache = [self._video_features[14 + i].detach().clone() for i in range(self.action_head.num_layers)]
+        # Only take condition frame (first temporal position) hidden states
+        video_cond_cache = []
+        for i in range(self.action_head.num_layers):
+            feat = self._video_features[14 + i]  # [B, T_int, H_int, W_int, D]
+            video_cond_cache.append(feat[:, 0:1, ...].detach().clone())
         
         # Action flow matching denoising
         action = torch.randn(B, action_horizon, self.action_head.action_dim, device=device)
         for i in range(num_inference_steps):
-            # Use 1-t to match training: t=0 is noise, t=1 is action
             t = torch.full((B,), i / num_inference_steps, device=device, dtype=torch.float32)
             pred = self.action_head(action, video_cond_cache, t, state=None)
-            # Flow from noise to action: dx/dt = pred
             dt = 1.0 / num_inference_steps
             action = action + dt * pred
         return action
