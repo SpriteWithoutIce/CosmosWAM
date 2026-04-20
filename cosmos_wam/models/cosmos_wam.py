@@ -118,7 +118,7 @@ class CosmosWAM(nn.Module):
         device = latents.device
         dtype = latents.dtype
         T_lat = latents.shape[2]
-        print("latents: ", latents.shape)
+        # print("latents: ", latents.shape)
         # -------- Video Flow Matching --------
         # Sample noise for latent channels (first 16 ch)
         noise_z = torch.randn(B, 16, T_lat, latents.shape[3], latents.shape[4],
