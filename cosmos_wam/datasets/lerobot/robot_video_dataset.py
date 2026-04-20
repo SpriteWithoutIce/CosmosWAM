@@ -208,11 +208,22 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             video = video.squeeze(0)  # [T_video, C, H, W]
 
         # final resize and normalization
-        video = self.resize_transform(video)
-        video = self.crop_transform(video)
-        video = self.normalize_transform(video)  # [T_video, C, H, W]
-
-        video = video.permute(1, 0, 2, 3) # [C, T_video, H, W], range [-1, 1]
+        if video.ndim == 5:
+            # Multi-camera without concat: [num_cameras, T_video, C, H, W]
+            # Process each camera independently, then restore shape
+            num_cameras, T_video, C, H, W = video.shape
+            video = video.view(num_cameras * T_video, C, H, W)
+            video = self.resize_transform(video)
+            video = self.crop_transform(video)
+            video = self.normalize_transform(video)  # [num_cameras*T_video, C, H, W]
+            video = video.view(num_cameras, T_video, C, video.shape[-2], video.shape[-1])
+            video = video.permute(2, 0, 1, 3, 4)  # [C, num_cameras, T_video, H, W], range [-1, 1]
+        else:
+            # Single camera: [T_video, C, H, W]
+            video = self.resize_transform(video)
+            video = self.crop_transform(video)
+            video = self.normalize_transform(video)  # [T_video, C, H, W]
+            video = video.permute(1, 0, 2, 3)  # [C, T_video, H, W], range [-1, 1]
 
         # Proxy (from lerobot): 
         #   action: [num_frames-1, action_dim] # start from t0, except the last frame

@@ -46,7 +46,7 @@ class CosmosWAM(nn.Module):
         Returns:
             two_view_video: [B, C, 2, H, W] where T=2 is [main_view, wrist_view]
         """
-        print("cosmoswam video shape: ",video.shape)
+        # print("cosmoswam video shape: ",video.shape)
         if video.ndim == 5:
             # Single camera format: [B, C, T, H, W]
             # Take frame 0 as main view. If wrist is not available, replicate frame 0.
@@ -60,11 +60,11 @@ class CosmosWAM(nn.Module):
             return torch.cat([main, wrist], dim=2)  # [B, C, 2, H, W]
         
         elif video.ndim == 6:
-            # Multi-camera format: [B, T, num_cameras, C, H, W]
+            # Multi-camera format: [B, C, num_cameras, T, H, W]
             # Take frame 0 from camera 0 (main) and camera 1 (wrist)
-            main = video[:, 0, 0, :, :, :].unsqueeze(2)   # [B, C, 1, H, W]
+            main = video[:, :, 0, 0:1, :, :]   # [B, C, 1, H, W]
             if video.shape[2] >= 2:
-                wrist = video[:, 0, 1, :, :, :].unsqueeze(2)  # [B, C, 1, H, W]
+                wrist = video[:, :, 1, 0:1, :, :]  # [B, C, 1, H, W]
             else:
                 wrist = main
             return torch.cat([main, wrist], dim=2)  # [B, C, 2, H, W]
@@ -72,11 +72,11 @@ class CosmosWAM(nn.Module):
         else:
             raise ValueError(
                 f"Unexpected video shape {tuple(video.shape)}. "
-                "Expected [B, C, T, H, W] or [B, T, num_cameras, C, H, W]."
+                "Expected [B, C, T, H, W] or [B, C, num_cameras, T, H, W]."
             )
 
     def build_inputs(self, sample: Dict[str, Any]) -> Dict[str, Any]:
-        video = sample["video"]              # [B, C, T, H, W] or [B, T, num_cameras, C, H, W]
+        video = sample["video"]              # [B, C, T, H, W] or [B, C, num_cameras, T, H, W]
         action = sample["action"]            # [B, Ta, action_dim]
         context = sample["context"]          # [B, L, D]
         proprio = sample.get("proprio", None)
