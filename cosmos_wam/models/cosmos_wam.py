@@ -140,8 +140,8 @@ class CosmosWAM(nn.Module):
             cosmos_layer_idx = 14 + action_layer_idx
             layer_hidden = hidden_list[cosmos_layer_idx]  # [B, T*H*W, D]
             B_actual, N, D_vid = layer_hidden.shape
-            assert N == B_actual * T_int * H_int * W_int, (
-                f"Hidden state size mismatch: N={N}, expected {B_actual}*{T_int}*{H_int}*{W_int}"
+            assert N == T_int * H_int * W_int, (
+                f"Hidden state size mismatch: N={N}, expected {T_int}*{H_int}*{W_int}={T_int * H_int * W_int}"
             )
             layer_grid = layer_hidden.view(B_actual, T_int, H_int, W_int, D_vid)
             video_cond_list.append(layer_grid)
