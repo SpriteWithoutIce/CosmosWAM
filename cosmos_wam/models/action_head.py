@@ -141,6 +141,8 @@ class ActionDiT(nn.Module):
         mlp_ratio: float = 4.0,
         actions_per_latent: int = 8,
         timestep_buckets: int = 1000,
+        state_dim: int = 8,
+        num_future_tokens: int = 32,
     ):
         super().__init__()
         self.action_dim = int(action_dim)
@@ -149,12 +151,29 @@ class ActionDiT(nn.Module):
         self.video_dim = int(video_dim)
         self.actions_per_latent = int(actions_per_latent)
         self.timestep_buckets = int(timestep_buckets)
+        self.state_dim = int(state_dim)
+        self.num_future_tokens = int(num_future_tokens)
 
         self.action_encoder = nn.Sequential(
             nn.Linear(action_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
+
+        # State encoder (like starVLA FlowmatchingActionHead)
+        self.state_encoder = (
+            nn.Sequential(
+                nn.Linear(state_dim, hidden_dim),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+            )
+            if state_dim > 0
+            else None
+        )
+
+        # Future query tokens (like starVLA)
+        self.future_tokens = nn.Embedding(num_future_tokens, hidden_dim)
+        nn.init.normal_(self.future_tokens.weight, mean=0.0, std=0.02)
 
         # Timestep embedding: sinusoidal + MLP
         self.timestep_proj = nn.Sequential(
@@ -281,6 +300,7 @@ class ActionDiT(nn.Module):
         z_action: torch.Tensor,
         video_tokens: List[torch.Tensor],
         timestep: torch.Tensor,
+        state: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if z_action.ndim != 3:
             raise ValueError(f"Expected z_action [B, L, D], got {tuple(z_action.shape)}")
@@ -300,11 +320,32 @@ class ActionDiT(nn.Module):
         pos_ids = torch.arange(seq_len, dtype=torch.long, device=device)
         x = x + self.pos_embedding(pos_ids).unsqueeze(0) + temb
 
-        self_mask = self._get_self_mask(num_actions=seq_len, device=device)
+        # Add future query tokens (like starVLA)
+        if self.num_future_tokens > 0:
+            future = self.future_tokens.weight.unsqueeze(0).expand(bsz, -1, -1).to(dtype=target_dtype)
+            x = torch.cat([future, x], dim=1)
+
+        # Add state encoding (like starVLA)
+        if self.state_encoder is not None and state is not None:
+            state_feat = self.state_encoder(state.to(dtype=target_dtype)).unsqueeze(1)  # [B, 1, D]
+            x = torch.cat([state_feat, x], dim=1)
+
+        self_mask = self._get_self_mask(num_actions=x.shape[1], device=device)
 
         for block, layer_video_tokens in zip(self.blocks, video_tokens):
             video_ctx = self._encode_video_context(layer_video_tokens, dtype=target_dtype)
             x = block(x, temb.squeeze(1).to(dtype=target_dtype), video_ctx, self_mask=self_mask)
 
         x = self.out_norm(x)
-        return self.action_out(x)
+        pred = self.action_out(x)
+
+        # Slice out only the action portion (skip state + future tokens)
+        skip_len = 0
+        if self.state_encoder is not None:
+            skip_len += 1
+        if self.num_future_tokens > 0:
+            skip_len += self.num_future_tokens
+        if skip_len > 0:
+            pred = pred[:, skip_len:]
+
+        return pred

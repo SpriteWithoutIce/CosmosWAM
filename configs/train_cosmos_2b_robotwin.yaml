@@ -44,6 +44,8 @@ model:
     video_dim: 2048
     mlp_ratio: 4.0
     actions_per_latent: 8
+    state_dim: 8             # proprioception state dimension
+    num_future_tokens: 32    # number of learnable future query tokens (like starVLA)
 
 data:
   train:

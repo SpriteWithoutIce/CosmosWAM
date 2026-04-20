@@ -79,6 +79,8 @@ def run_training(cfg: DictConfig):
         video_dim=cfg.model.action_head.video_dim,
         mlp_ratio=cfg.model.action_head.get("mlp_ratio", 4.0),
         actions_per_latent=cfg.model.action_head.get("actions_per_latent", 8),
+        state_dim=cfg.model.action_head.get("state_dim", 8),
+        num_future_tokens=cfg.model.action_head.get("num_future_tokens", 32),
     )
 
     # 4. Build CosmosWAM

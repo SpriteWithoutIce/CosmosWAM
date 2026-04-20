@@ -424,6 +424,8 @@ class CosmosWAMRobotWinPolicy:
             video_dim=model_cfg.action_head.video_dim,
             mlp_ratio=model_cfg.action_head.get("mlp_ratio", 4.0),
             actions_per_latent=model_cfg.action_head.get("actions_per_latent", 8),
+            state_dim=model_cfg.action_head.get("state_dim", 0),
+            num_future_tokens=model_cfg.action_head.get("num_future_tokens", 32),
         )
         
         # 4. Build CosmosWAM
