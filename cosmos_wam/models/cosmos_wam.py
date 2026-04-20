@@ -67,18 +67,6 @@ class CosmosWAM(nn.Module):
                 "Expected [B, C, T, H, W] or [B, C, num_cameras, T, H, W]."
             )
 
-    def _encode_single_view(self, frame_B_C_1_H_W: torch.Tensor) -> torch.Tensor:
-        """Encode a single-view frame through VAE with temporal padding.
-        
-        Native WanVAE_ CausalConv3d requires T >= kernel_size(3).
-        We replicate-pad T=1 to T=4, encode, and get latent T=1.
-        """
-        B, C, _, H, W = frame_B_C_1_H_W.shape
-        # Replicate single frame to T=4 to satisfy VAE temporal conv
-        frame_padded = frame_B_C_1_H_W.repeat(1, 1, 4, 1, 1)  # [B, C, 4, H, W]
-        latent = self.vae.encode(frame_padded)  # [B, 16, 1, h, w]
-        return latent
-
     def build_inputs(self, sample: Dict[str, Any]) -> Dict[str, Any]:
         video = sample["video"]              # [B, C, T, H, W] or [B, C, num_cameras, T, H, W]
         action = sample["action"]            # [B, Ta, action_dim]
@@ -96,22 +84,23 @@ class CosmosWAM(nn.Module):
             proprio = proprio.to(device=dit_device, dtype=dit_dtype)
 
         with torch.no_grad():
-            # Extract two views
+            # Extract two views and stack as temporal frames for VAE
             two_view_video = self._extract_two_views(video.to(device=dit_device, dtype=torch.float32))
-            # Encode each camera view separately, then stack along temporal dim.
-            # This way latent T = num_cameras (e.g. 2), and each camera is a distinct condition frame.
-            main_frame = two_view_video[:, :, 0:1, :, :]   # [B, C, 1, H, W]
-            wrist_frame = two_view_video[:, :, 1:2, :, :]  # [B, C, 1, H, W]
-            main_latent = self._encode_single_view(main_frame)   # [B, 16, 1, h, w]
-            wrist_latent = self._encode_single_view(wrist_frame) # [B, 16, 1, h, w]
-            latents = torch.cat([main_latent, wrist_latent], dim=2)  # [B, 16, 2, h, w]
+            # VAE temporal conv requires temporal dim >= kernel_size (3).
+            # If T < 4, replicate frames to avoid RuntimeError.
+            if two_view_video.shape[2] < 4:
+                repeat_factor = (4 + two_view_video.shape[2] - 1) // two_view_video.shape[2]
+                two_view_video = two_view_video.repeat(1, 1, repeat_factor, 1, 1)[:, :, :4, :, :]
+            # VAE encode - VAE uses its own dtype
+            latents = self.vae.encode(two_view_video)  # [B, C_latent, T_latent, H_latent, W_latent]
+            # Move to DiT's device and convert to DiT's dtype
             latents = latents.to(device=dit_device, dtype=dit_dtype)
         
         # Pad latents from 16 to 18 channels to match Cosmos checkpoint
         if latents.shape[1] == 16:
             padding = torch.zeros(latents.shape[0], 2, *latents.shape[2:], 
                                   device=dit_device, dtype=dit_dtype)
-            latents = torch.cat([latents, padding], dim=1)  # [B, 18, 2, h, w]
+            latents = torch.cat([latents, padding], dim=1)  # [B, 18, T_latent, H_latent, W_latent]
         return {
             "latents": latents,
             "action": action,
@@ -222,12 +211,13 @@ class CosmosWAM(nn.Module):
 
         B = two_view.shape[0]
 
-        # Encode each view separately, then stack along temporal dim
-        main_frame = two_view[:, :, 0:1, :, :]   # [B, C, 1, H, W]
-        wrist_frame = two_view[:, :, 1:2, :, :]  # [B, C, 1, H, W]
-        main_latent = self._encode_single_view(main_frame)   # [B, 16, 1, h, w]
-        wrist_latent = self._encode_single_view(wrist_frame) # [B, 16, 1, h, w]
-        latents = torch.cat([main_latent, wrist_latent], dim=2)  # [B, 16, 2, h, w]
+        # VAE temporal conv requires T >= 4; replicate if needed
+        if two_view.shape[2] < 4:
+            repeat_factor = (4 + two_view.shape[2] - 1) // two_view.shape[2]
+            two_view = two_view.repeat(1, 1, repeat_factor, 1, 1)[:, :, :4, :, :]
+        
+        # VAE encode
+        latents = self.vae.encode(two_view)  # [B, C, T_latent, H, W]
 
         # Pad latents from 16 to 18 channels to match Cosmos checkpoint
         if latents.shape[1] == 16:
@@ -236,7 +226,7 @@ class CosmosWAM(nn.Module):
                 *latents.shape[2:], 
                 device=device, dtype=latents.dtype
             )
-            latents = torch.cat([latents, padding], dim=1)  # [B, 18, 2, h, w]
+            latents = torch.cat([latents, padding], dim=1)  # [B, 18, T_latent, H, W]
 
         # Run dit once to populate video features cache
         context_dtype = next(self.dit.parameters()).dtype
