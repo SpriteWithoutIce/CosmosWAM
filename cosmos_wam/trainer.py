@@ -1,5 +1,6 @@
 import os
 import math
+from datetime import datetime
 import torch
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
@@ -191,7 +192,10 @@ class CosmosWAMTrainer:
             run_name = swanlab_config.get("name", None)
             if run_name is None or run_name == "auto":
                 run_name = self._generate_swanlab_run_name(cfg)
-            
+            else:
+                # Timestamp
+                timestamp = datetime.now().strftime("%m%d_%H%M")
+                run_name = f"{run_name}_{timestamp}"
             swanlab.init(
                 project=swanlab_config.get("project", "cosmos-wam"),
                 experiment_name=run_name,
@@ -221,7 +225,7 @@ class CosmosWAMTrainer:
 
     def _generate_swanlab_run_name(self, cfg: DictConfig) -> str:
         """Generate a descriptive swanlab run name based on config."""
-        from datetime import datetime
+        
         
         # Extract dataset info from data config
         data_cfg = self.data_cfg.get("train", {})

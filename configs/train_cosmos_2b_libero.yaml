@@ -136,9 +136,9 @@ trainer:
     eps: 1.0e-08
   
   swanlab:
-    enabled: false
+    enabled: true
     project: "cosmos-wam"
-    name: null
+    name: "4suites_f2_b32_encoder"
   
   deepspeed:
     zero_optimization:
