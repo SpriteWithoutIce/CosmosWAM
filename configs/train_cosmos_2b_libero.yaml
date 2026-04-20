@@ -75,8 +75,8 @@ data:
           shape: 8
     num_frames: 9
     global_sample_stride: 1
-    action_video_freq_ratio: 1      # 20 FPS -> 5Hz action
-    video_size: [224, 448]          # Single camera 224x224
+    action_video_freq_ratio: 1
+    video_size: [224, 224]          # Single camera 224x224
     val_set_proportion: 0.0
     is_training_set: true
     skip_padding_as_possible: false
