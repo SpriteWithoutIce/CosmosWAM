@@ -1,136 +1,722 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from diffusers import ConfigMixin, ModelMixin
+from diffusers.configuration_utils import register_to_config
+from diffusers.models.attention import Attention, FeedForward
+from diffusers.models.embeddings import (
+    SinusoidalPositionalEmbedding,
+    TimestepEmbedding,
+    Timesteps,
+)
+from torch.distributions import Beta
+from transformers import PretrainedConfig
+from transformers.feature_extraction_utils import BatchFeature
 
 
-def _sinusoidal_timestep_embedding(t: torch.Tensor, dim: int) -> torch.Tensor:
-    if t.ndim > 1:
-        t = t.view(t.shape[0], -1)[:, 0]
-    t = t.float()
-    half = dim // 2
-    device = t.device
-    freq = torch.exp(-math.log(10000.0) * torch.arange(half, device=device).float() / max(half - 1, 1))
-    args = t[:, None] * freq[None, :]
-    emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
-    if dim % 2 == 1:
-        emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
-    return emb
+# ============================================================================
+# Copied from starVLA.model.modules.action_model.flow_matching_head.action_encoder
+# ============================================================================
 
 
-def _sinusoidal_position_embedding(pos: torch.Tensor, dim: int) -> torch.Tensor:
-    pos = pos.float()
-    half = dim // 2
-    device = pos.device
-    freq = torch.exp(-math.log(10000.0) * torch.arange(half, device=device).float() / max(half - 1, 1))
-    args = pos[:, None] * freq[None, :]
-    emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
-    if dim % 2 == 1:
-        emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
-    return emb
+def swish(x):
+    return x * torch.sigmoid(x)
 
 
-def _build_block_causal_self_mask(seq_len: int, block_size: int, device: torch.device) -> torch.Tensor:
-    mask = torch.full((seq_len, seq_len), float("-inf"), device=device)
-    block_size = max(int(block_size), 1)
-    for q_idx in range(seq_len):
-        current_block = q_idx // block_size
-        allowed_until = min(seq_len, (current_block + 1) * block_size)
-        mask[q_idx, :allowed_until] = 0.0
-    return mask
+class SinusoidalPositionalEncoding(nn.Module):
+    """
+    Produces a sinusoidal encoding of shape (B, T, w)
+    given timesteps of shape (B, T).
+    """
 
-
-class ActionBlock(nn.Module):
-    """Self-Attn + Cross-Attn(video) + FFN with AdaLN."""
-
-    def __init__(self, hidden_dim: int, num_heads: int, video_dim: int, mlp_ratio: float = 4.0):
+    def __init__(self, embedding_dim):
         super().__init__()
-        self.norm1 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
-        self.self_attn = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True)
+        self.embedding_dim = embedding_dim
 
-        self.norm2 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
-        self.cross_attn = nn.MultiheadAttention(
-            hidden_dim,
-            num_heads,
-            kdim=video_dim,
-            vdim=video_dim,
-            batch_first=True,
+    def forward(self, timesteps):
+        # timesteps: shape (B, T)
+        timesteps = timesteps.float()
+
+        B, T = timesteps.shape
+        device = timesteps.device
+
+        half_dim = self.embedding_dim // 2
+        exponent = -torch.arange(half_dim, dtype=torch.float, device=device) * (
+            torch.log(torch.tensor(10000.0)) / half_dim
         )
+        freqs = timesteps.unsqueeze(-1) * exponent.exp()  # (B, T, half_dim)
 
-        self.norm3 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
-        self.mlp = nn.Sequential(
-            nn.Linear(hidden_dim, int(hidden_dim * mlp_ratio), bias=False),
-            nn.GELU(approximate="tanh"),
-            nn.Linear(int(hidden_dim * mlp_ratio), hidden_dim, bias=False),
-        )
+        sin = torch.sin(freqs)
+        cos = torch.cos(freqs)
+        enc = torch.cat([sin, cos], dim=-1)  # (B, T, w)
 
-        # AdaLN modulation: 9 params (sa_shift, sa_scale, sa_gate,
-        #                              ca_shift, ca_scale, ca_gate,
-        #                              mlp_shift, mlp_scale, mlp_gate)
-        self.modulation = nn.Linear(hidden_dim, 9 * hidden_dim, bias=False)
-        nn.init.zeros_(self.modulation.weight)
+        return enc
+
+
+# ============================================================================
+# Copied from starVLA.model.modules.action_model.flow_matching_head.cross_attention_dit
+# ============================================================================
+
+
+class TimestepEncoder(nn.Module):
+    def __init__(self, embedding_dim, compute_dtype=torch.float32):
+        super().__init__()
+        self.time_proj = Timesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=1)
+        self.timestep_embedder = TimestepEmbedding(in_channels=256, time_embed_dim=embedding_dim)
+
+    def forward(self, timesteps):
+        dtype = next(self.parameters()).dtype
+        timesteps_proj = self.time_proj(timesteps).to(dtype)
+        timesteps_emb = self.timestep_embedder(timesteps_proj)  # (N, D)
+        return timesteps_emb
+
+
+class AdaLayerNorm(nn.Module):
+    def __init__(
+        self,
+        embedding_dim: int,
+        norm_elementwise_affine: bool = False,
+        norm_eps: float = 1e-5,
+        chunk_dim: int = 0,
+    ):
+        super().__init__()
+        self.chunk_dim = chunk_dim
+        output_dim = embedding_dim * 2
+        self.silu = nn.SiLU()
+        self.linear = nn.Linear(embedding_dim, output_dim)
+        self.norm = nn.LayerNorm(output_dim // 2, norm_eps, norm_elementwise_affine)
 
     def forward(
         self,
         x: torch.Tensor,
-        t_emb: torch.Tensor,
-        video_ctx: torch.Tensor,
-        self_mask: Optional[torch.Tensor] = None,
+        temb: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # Ensure all inputs match the model dtype (for mixed precision)
-        target_dtype = self.modulation.weight.dtype
-        if x.dtype != target_dtype:
-            x = x.to(dtype=target_dtype)
-        if t_emb.dtype != target_dtype:
-            t_emb = t_emb.to(dtype=target_dtype)
-        if video_ctx.dtype != target_dtype:
-            video_ctx = video_ctx.to(dtype=target_dtype)
-        
-        # t_emb: [B, D] -> modulation: [B, 9*D]
-        mods = self.modulation(t_emb).chunk(9, dim=-1)
-        shift_sa, scale_sa, gate_sa, shift_ca, scale_ca, gate_ca, shift_mlp, scale_mlp, gate_mlp = mods
-        # Ensure all AdaLN params match input dtype
-        target_dtype = x.dtype
-        shift_sa = shift_sa.unsqueeze(1).to(dtype=target_dtype)
-        scale_sa = scale_sa.unsqueeze(1).to(dtype=target_dtype)
-        gate_sa = gate_sa.unsqueeze(1).to(dtype=target_dtype)
-        shift_ca = shift_ca.unsqueeze(1).to(dtype=target_dtype)
-        scale_ca = scale_ca.unsqueeze(1).to(dtype=target_dtype)
-        gate_ca = gate_ca.unsqueeze(1).to(dtype=target_dtype)
-        shift_mlp = shift_mlp.unsqueeze(1).to(dtype=target_dtype)
-        scale_mlp = scale_mlp.unsqueeze(1).to(dtype=target_dtype)
-        gate_mlp = gate_mlp.unsqueeze(1).to(dtype=target_dtype)
-
-        # Self-attention with AdaLN
-        norm_x = self.norm1(x) * (1 + scale_sa) + shift_sa
-        # Ensure norm_x and mask match attention weight dtype
-        attn_dtype = self.self_attn.in_proj_weight.dtype
-        norm_x_attn = norm_x.to(dtype=attn_dtype)
-        self_mask_attn = self_mask.to(dtype=attn_dtype) if self_mask is not None else None
-        attn_out, _ = self.self_attn(norm_x_attn, norm_x_attn, norm_x_attn, attn_mask=self_mask_attn)
-        x = x + gate_sa * attn_out.to(dtype=x.dtype)
-
-        # Cross-attention to video context with AdaLN
-        norm_x = self.norm2(x) * (1 + scale_ca) + shift_ca
-        cross_dtype = self.cross_attn.in_proj_weight.dtype
-        norm_x_cross = norm_x.to(dtype=cross_dtype)
-        video_ctx_cross = video_ctx.to(dtype=cross_dtype)
-        cross_out, _ = self.cross_attn(norm_x_cross, video_ctx_cross, video_ctx_cross)
-        x = x + gate_ca * cross_out.to(dtype=x.dtype)
-
-        # FFN with AdaLN
-        norm_x = self.norm3(x) * (1 + scale_mlp) + shift_mlp
-        mlp_dtype = self.mlp[0].weight.dtype
-        mlp_out = self.mlp(norm_x.to(dtype=mlp_dtype))
-        x = x + gate_mlp * mlp_out.to(dtype=x.dtype)
+        temb = self.linear(self.silu(temb))
+        scale, shift = temb.chunk(2, dim=1)
+        x = self.norm(x) * (1 + scale[:, None]) + shift[:, None]
         return x
 
 
+class BasicTransformerBlock(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_attention_heads: int,
+        attention_head_dim: int,
+        dropout=0.0,
+        cross_attention_dim: Optional[int] = None,
+        activation_fn: str = "geglu",
+        attention_bias: bool = False,
+        upcast_attention: bool = False,
+        norm_elementwise_affine: bool = True,
+        norm_type: str = "layer_norm",
+        norm_eps: float = 1e-5,
+        final_dropout: bool = False,
+        attention_type: str = "default",
+        positional_embeddings: Optional[str] = None,
+        num_positional_embeddings: Optional[int] = None,
+        ff_inner_dim: Optional[int] = None,
+        ff_bias: bool = True,
+        attention_out_bias: bool = True,
+    ):
+        super().__init__()
+        self.dim = dim
+        self.num_attention_heads = num_attention_heads
+        self.attention_head_dim = attention_head_dim
+        self.dropout = dropout
+        self.cross_attention_dim = cross_attention_dim
+        self.activation_fn = activation_fn
+        self.attention_bias = attention_bias
+        self.norm_elementwise_affine = norm_elementwise_affine
+        self.positional_embeddings = positional_embeddings
+        self.num_positional_embeddings = num_positional_embeddings
+        self.norm_type = norm_type
+
+        if positional_embeddings and (num_positional_embeddings is None):
+            raise ValueError(
+                "If `positional_embedding` type is defined, `num_positition_embeddings` must also be defined."
+            )
+
+        if positional_embeddings == "sinusoidal":
+            self.pos_embed = SinusoidalPositionalEmbedding(dim, max_seq_length=num_positional_embeddings)
+        else:
+            self.pos_embed = None
+
+        if norm_type == "ada_norm":
+            self.norm1 = AdaLayerNorm(dim)
+        else:
+            self.norm1 = nn.LayerNorm(dim, elementwise_affine=norm_elementwise_affine, eps=norm_eps)
+
+        self.attn1 = Attention(
+            query_dim=dim,
+            heads=num_attention_heads,
+            dim_head=attention_head_dim,
+            dropout=dropout,
+            bias=attention_bias,
+            cross_attention_dim=cross_attention_dim,
+            upcast_attention=upcast_attention,
+            out_bias=attention_out_bias,
+        )
+
+        self.norm3 = nn.LayerNorm(dim, norm_eps, norm_elementwise_affine)
+        self.ff = FeedForward(
+            dim,
+            dropout=dropout,
+            activation_fn=activation_fn,
+            final_dropout=final_dropout,
+            inner_dim=ff_inner_dim,
+            bias=ff_bias,
+        )
+        if final_dropout:
+            self.final_dropout = nn.Dropout(dropout)
+        else:
+            self.final_dropout = None
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
+        temb: Optional[torch.LongTensor] = None,
+    ) -> torch.Tensor:
+
+        if self.norm_type == "ada_norm":
+            norm_hidden_states = self.norm1(hidden_states, temb)
+        else:
+            norm_hidden_states = self.norm1(hidden_states)
+
+        if self.pos_embed is not None:
+            norm_hidden_states = self.pos_embed(norm_hidden_states)
+
+        attn_output = self.attn1(
+            norm_hidden_states,
+            encoder_hidden_states=encoder_hidden_states,
+            attention_mask=encoder_attention_mask,
+        )
+        if self.final_dropout:
+            attn_output = self.final_dropout(attn_output)
+
+        hidden_states = attn_output + hidden_states
+        if hidden_states.ndim == 4:
+            hidden_states = hidden_states.squeeze(1)
+
+        norm_hidden_states = self.norm3(hidden_states)
+        ff_output = self.ff(norm_hidden_states)
+
+        hidden_states = ff_output + hidden_states
+        if hidden_states.ndim == 4:
+            hidden_states = hidden_states.squeeze(1)
+        return hidden_states
+
+
+class DiT(ModelMixin, ConfigMixin):
+    _supports_gradient_checkpointing = True
+
+    @register_to_config
+    def __init__(
+        self,
+        num_attention_heads: int = 8,
+        attention_head_dim: int = 64,
+        output_dim: int = 26,
+        num_layers: int = 12,
+        dropout: float = 0.1,
+        attention_bias: bool = True,
+        activation_fn: str = "gelu-approximate",
+        num_embeds_ada_norm: Optional[int] = 1000,
+        upcast_attention: bool = False,
+        norm_type: str = "ada_norm",
+        norm_elementwise_affine: bool = False,
+        norm_eps: float = 1e-5,
+        max_num_positional_embeddings: int = 512,
+        compute_dtype=torch.float32,
+        final_dropout: bool = True,
+        positional_embeddings: Optional[str] = "sinusoidal",
+        interleave_self_attention=False,
+        cross_attention_dim: Optional[int] = None,
+        **kwargs,
+    ):
+        super().__init__()
+        self.attention_head_dim = attention_head_dim
+        self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
+        self.gradient_checkpointing = False
+
+        compute_dtype = getattr(self.config, "compute_dtype", torch.float32)
+        self.timestep_encoder = TimestepEncoder(
+            embedding_dim=self.inner_dim, compute_dtype=compute_dtype
+        )
+
+        all_blocks = []
+        for idx in range(self.config.num_layers):
+            use_self_attn = idx % 2 == 1 and interleave_self_attention
+            curr_cross_attention_dim = cross_attention_dim if not use_self_attn else None
+
+            all_blocks += [
+                BasicTransformerBlock(
+                    self.inner_dim,
+                    self.config.num_attention_heads,
+                    self.config.attention_head_dim,
+                    dropout=self.config.dropout,
+                    activation_fn=self.config.activation_fn,
+                    attention_bias=self.config.attention_bias,
+                    upcast_attention=self.config.upcast_attention,
+                    norm_type=norm_type,
+                    norm_elementwise_affine=self.config.norm_elementwise_affine,
+                    norm_eps=self.config.norm_eps,
+                    positional_embeddings=positional_embeddings,
+                    num_positional_embeddings=self.config.max_num_positional_embeddings,
+                    final_dropout=final_dropout,
+                    cross_attention_dim=curr_cross_attention_dim,
+                )
+            ]
+        self.transformer_blocks = nn.ModuleList(all_blocks)
+
+        self.norm_out = nn.LayerNorm(self.inner_dim, elementwise_affine=False, eps=1e-6)
+        self.proj_out_1 = nn.Linear(self.inner_dim, 2 * self.inner_dim)
+        self.proj_out_2 = nn.Linear(self.inner_dim, self.config.output_dim)
+        print(
+            "Total number of DiT parameters: ",
+            sum(p.numel() for p in self.parameters() if p.requires_grad),
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        timestep: Optional[torch.LongTensor] = None,
+        return_all_hidden_states: bool = False,
+        encoder_attention_mask=None,
+    ):
+        temb = self.timestep_encoder(timestep)
+
+        hidden_states = hidden_states.contiguous()
+        encoder_hidden_states = encoder_hidden_states.contiguous()
+
+        all_hidden_states = [hidden_states]
+
+        for idx, block in enumerate(self.transformer_blocks):
+            if idx % 2 == 1 and self.config.interleave_self_attention:
+                hidden_states = block(
+                    hidden_states,
+                    attention_mask=None,
+                    encoder_hidden_states=None,
+                    encoder_attention_mask=None,
+                    temb=temb,
+                )
+            else:
+                hidden_states = block(
+                    hidden_states,
+                    attention_mask=None,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
+                    temb=temb,
+                )
+            all_hidden_states.append(hidden_states)
+
+        conditioning = temb
+        shift, scale = self.proj_out_1(F.silu(conditioning)).chunk(2, dim=1)
+        hidden_states = self.norm_out(hidden_states) * (1 + scale[:, None]) + shift[:, None]
+        if return_all_hidden_states:
+            return self.proj_out_2(hidden_states), all_hidden_states
+        else:
+            return self.proj_out_2(hidden_states)
+
+
+class SelfAttentionTransformer(ModelMixin, ConfigMixin):
+    _supports_gradient_checkpointing = True
+
+    @register_to_config
+    def __init__(
+        self,
+        num_attention_heads: int = 8,
+        attention_head_dim: int = 64,
+        output_dim: int = 26,
+        num_layers: int = 12,
+        dropout: float = 0.1,
+        attention_bias: bool = True,
+        activation_fn: str = "gelu-approximate",
+        num_embeds_ada_norm: Optional[int] = 1000,
+        upcast_attention: bool = False,
+        max_num_positional_embeddings: int = 512,
+        compute_dtype=torch.float32,
+        final_dropout: bool = True,
+        positional_embeddings: Optional[str] = "sinusoidal",
+        interleave_self_attention=False,
+    ):
+        super().__init__()
+
+        self.attention_head_dim = attention_head_dim
+        self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
+        self.gradient_checkpointing = False
+
+        self.transformer_blocks = nn.ModuleList(
+            [
+                BasicTransformerBlock(
+                    self.inner_dim,
+                    self.config.num_attention_heads,
+                    self.config.attention_head_dim,
+                    dropout=self.config.dropout,
+                    activation_fn=self.config.activation_fn,
+                    attention_bias=self.config.attention_bias,
+                    upcast_attention=self.config.upcast_attention,
+                    positional_embeddings=positional_embeddings,
+                    num_positional_embeddings=self.config.max_num_positional_embeddings,
+                    final_dropout=final_dropout,
+                )
+                for _ in range(self.config.num_layers)
+            ]
+        )
+        print(
+            "Total number of SelfAttentionTransformer parameters: ",
+            sum(p.numel() for p in self.parameters() if p.requires_grad),
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        return_all_hidden_states: bool = False,
+    ):
+        hidden_states = hidden_states.contiguous()
+        all_hidden_states = [hidden_states]
+
+        for idx, block in enumerate(self.transformer_blocks):
+            hidden_states = block(hidden_states)
+            all_hidden_states.append(hidden_states)
+
+        if return_all_hidden_states:
+            return hidden_states, all_hidden_states
+        else:
+            return hidden_states
+
+
+# ============================================================================
+# Copied from starVLA.model.modules.action_model.GR00T_ActionHeader
+# ============================================================================
+
+
+class CategorySpecificLinear(nn.Module):
+    def __init__(self, num_categories, input_dim, hidden_dim):
+        super().__init__()
+        self.num_categories = num_categories
+        self.W = nn.Parameter(0.02 * torch.randn(num_categories, input_dim, hidden_dim))
+        self.b = nn.Parameter(torch.zeros(num_categories, hidden_dim))
+
+    def forward(self, x, cat_ids):
+        selected_W = self.W[cat_ids]
+        selected_b = self.b[cat_ids]
+        return torch.bmm(x, selected_W) + selected_b.unsqueeze(1)
+
+
+class CategorySpecificMLP(nn.Module):
+    def __init__(self, num_categories, input_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.num_categories = num_categories
+        self.layer1 = CategorySpecificLinear(num_categories, input_dim, hidden_dim)
+        self.layer2 = CategorySpecificLinear(num_categories, hidden_dim, output_dim)
+
+    def forward(self, x, cat_ids):
+        hidden = F.relu(self.layer1(x, cat_ids))
+        return self.layer2(hidden, cat_ids)
+
+
+class MLP(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.layer1 = nn.Linear(input_dim, hidden_dim)
+        self.layer2 = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        return self.layer2(F.relu(self.layer1(x)))
+
+
+class ActionEncoder(nn.Module):
+    def __init__(self, action_dim, hidden_size):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.action_dim = action_dim
+        self.layer1 = nn.Linear(action_dim, hidden_size)
+        self.layer2 = nn.Linear(2 * hidden_size, hidden_size)
+        self.layer3 = nn.Linear(hidden_size, hidden_size)
+        self.pos_encoding = SinusoidalPositionalEncoding(hidden_size)
+
+    def forward(self, actions, timesteps):
+        """
+        actions:   shape (B, T, action_dim)
+        timesteps: shape (B,)  -- a single scalar per batch item
+        returns:   shape (B, T, hidden_size)
+        """
+        B, T, _ = actions.shape
+
+        if timesteps.dim() == 1 and timesteps.shape[0] == B:
+            timesteps = timesteps.unsqueeze(1).expand(-1, T)
+        else:
+            raise ValueError("Expected `timesteps` to have shape (B,) so we can replicate across T.")
+
+        a_emb = self.layer1(actions)
+        tau_emb = self.pos_encoding(timesteps).to(dtype=a_emb.dtype)
+        x = torch.cat([a_emb, tau_emb], dim=-1)
+        x = swish(self.layer2(x))
+        x = self.layer3(x)
+        return x
+
+
+class MultiEmbodimentActionEncoder(nn.Module):
+    def __init__(self, action_dim, hidden_size, num_embodiments):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.num_embodiments = num_embodiments
+
+        self.W1 = CategorySpecificLinear(num_embodiments, action_dim, hidden_size)
+        self.W2 = CategorySpecificLinear(num_embodiments, 2 * hidden_size, hidden_size)
+        self.W3 = CategorySpecificLinear(num_embodiments, hidden_size, hidden_size)
+        self.pos_encoding = SinusoidalPositionalEncoding(hidden_size)
+
+    def forward(self, actions, timesteps, cat_ids):
+        B, T, _ = actions.shape
+
+        if timesteps.dim() == 1 and timesteps.shape[0] == B:
+            timesteps = timesteps.unsqueeze(1).expand(-1, T)
+        else:
+            raise ValueError("Expected `timesteps` to have shape (B,) so we can replicate across T.")
+
+        a_emb = self.W1(actions, cat_ids)
+        tau_emb = self.pos_encoding(timesteps).to(dtype=a_emb.dtype)
+        x = torch.cat([a_emb, tau_emb], dim=-1)
+        x = swish(self.W2(x, cat_ids))
+        x = self.W3(x, cat_ids)
+        return x
+
+
+@dataclass
+class FlowmatchingActionHeadConfig(PretrainedConfig):
+    add_pos_embed: bool = field(default=True, metadata={"help": "Whether to add positional embedding"})
+    diffusion_model_cfg: dict = field(default=None, metadata={"help": "Diffusion model configuration."})
+    input_embedding_dim: int = field(default=1536, metadata={"help": "Input embedding channel dimension."})
+    hidden_size: int = field(default=1024, metadata={"help": "Input embedding dimension."})
+    max_seq_len: int = field(default=1024, metadata={"help": "Maxium Sequence Length"})
+    action_dim: int = field(default=None, metadata={"help": "Action dimension."})
+    action_horizon: int = field(default=None, metadata={"help": "Action horizon."})
+    noise_beta_alpha: float = field(default=1.5, metadata={"help": ""})
+    noise_beta_beta: float = field(default=1.0, metadata={"help": ""})
+    noise_s: float = field(default=0.999, metadata={"help": "Flow matching noise Beta distribution s."})
+    num_timestep_buckets: int = field(default=1000, metadata={"help": "Number of timestep discretization buckets."})
+    num_inference_timesteps: int = field(
+        default=None,
+        metadata={"help": "Number of inference steps for noise diffusion."},
+    )
+    max_num_embodiments: int = field(default=32, metadata={"help": "Number of embodiments."})
+    tune_projector: bool = field(default=True, metadata={"help": "Whether to tune the projector."})
+    tune_diffusion_model: bool = field(default=True, metadata={"help": "Whether to tune the diffusion model."})
+    load_pretrained_det_decode_layer_path: str = field(
+        default=None, metadata={"help": "Path to pretrained detection model."}
+    )
+    detection_coeff: float = field(default=1.0, metadata={"help": "Detection coefficient."})
+    freeze_decode_layer: bool = field(default=False)
+    expand_batch: int = field(default=None)
+    use_vlln: bool = field(default=True)
+    vl_self_attention_cfg: dict = field(default=None)
+    num_target_vision_tokens: int = field(default=32, metadata={"help": "Number of target vision tokens."})
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+DiTConfig = {
+    "DiT-B": {"input_embedding_dim": 768, "attention_head_dim": 64, "num_attention_heads": 12},
+    "DiT-L": {"input_embedding_dim": 1536, "attention_head_dim": 48, "num_attention_heads": 32},
+}
+
+
+class FlowmatchingActionHead(nn.Module):
+    def __init__(
+        self,
+        full_config,
+    ):
+        super().__init__()
+        config = full_config.framework.action_model
+        self.hidden_size = config.hidden_size
+        self.full_config = full_config
+        action_model_type = config.action_model_type
+        action_model_cfg = DiTConfig[action_model_type]
+
+        self.input_embedding_dim = action_model_cfg["input_embedding_dim"]
+        diffusion_model_cfg = config.diffusion_model_cfg
+        diffusion_model_cfg = {**action_model_cfg, **diffusion_model_cfg}
+        self.model = DiT(**diffusion_model_cfg)
+        self.action_dim = config.action_dim
+        self.action_horizon = config.future_action_window_size + 1
+        self.num_inference_timesteps = config.num_inference_timesteps
+
+        self.state_encoder = (
+            MLP(
+                input_dim=config.state_dim,
+                hidden_dim=self.hidden_size,
+                output_dim=self.input_embedding_dim,
+            )
+            if config.state_dim
+            else None
+        )
+
+        self.action_encoder = ActionEncoder(
+            action_dim=config.action_dim,
+            hidden_size=self.input_embedding_dim,
+        )
+        self.action_decoder = MLP(
+            input_dim=self.model.config.output_dim,
+            hidden_dim=self.hidden_size,
+            output_dim=self.action_dim,
+        )
+        self.future_tokens = nn.Embedding(config.num_target_vision_tokens, self.input_embedding_dim)
+        nn.init.normal_(self.future_tokens.weight, mean=0.0, std=0.02)
+
+        if config.add_pos_embed:
+            self.position_embedding = nn.Embedding(config.max_seq_len, self.input_embedding_dim)
+            nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
+
+        self.beta_dist = Beta(config.noise_beta_alpha, config.noise_beta_beta)
+        self.num_timestep_buckets = config.num_timestep_buckets
+        self.config = config
+
+    def sample_time(self, batch_size, device, dtype):
+        sample = self.beta_dist.sample([batch_size]).to(device, dtype=dtype).clamp(max=self.config.noise_s)
+        return (self.config.noise_s - sample) / self.config.noise_s
+
+    def prepare_input(self, batch: dict) -> BatchFeature:
+        return BatchFeature(data=batch)
+
+    def forward(
+        self, vl_embs: torch.Tensor, actions: torch.Tensor, state: torch.Tensor = None, encoder_attention_mask=None
+    ):
+        """
+        vl_embs: shape (B, seq_length, feature_dim)
+        actions: shape (B, future_action_window_size, D_action)
+        """
+        device = vl_embs.device
+
+        noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
+        t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
+        t = t[:, None, None]
+
+        noisy_trajectory = (1 - t) * noise + t * actions
+        velocity = actions - noise
+
+        t_discretized = (t[:, 0, 0] * self.num_timestep_buckets).long()
+        action_features = self.action_encoder(noisy_trajectory, t_discretized)
+
+        state_features = self.state_encoder(state) if state is not None else None
+
+        if self.config.add_pos_embed:
+            pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
+            pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
+            action_features = action_features + pos_embs
+
+        future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
+        sa_embs = (
+            torch.cat((state_features, future_tokens, action_features), dim=1)
+            if state_features is not None
+            else torch.cat((future_tokens, action_features), dim=1)
+        )
+
+        model_output = self.model(
+            hidden_states=sa_embs,
+            encoder_hidden_states=vl_embs,
+            encoder_attention_mask=encoder_attention_mask,
+            timestep=t_discretized,
+            return_all_hidden_states=False,
+        )
+        pred = self.action_decoder(model_output)
+        pred_actions = pred[:, -actions.shape[1] :]
+
+        loss = ((pred_actions - velocity) ** 2).mean()
+        return loss
+
+    @torch.no_grad()
+    def predict_action(self, vl_embs: torch.Tensor, state: torch.Tensor = None) -> torch.Tensor:
+        batch_size = vl_embs.shape[0]
+        device = vl_embs.device
+        actions = torch.randn(
+            size=(batch_size, self.config.action_horizon, self.config.action_dim),
+            dtype=vl_embs.dtype,
+            device=device,
+        )
+
+        num_steps = self.num_inference_timesteps
+        dt = 1.0 / num_steps
+
+        state_features = self.state_encoder(state) if state is not None else None
+
+        for t in range(num_steps):
+            t_cont = t / float(num_steps)
+            t_discretized = int(t_cont * self.num_timestep_buckets)
+
+            timesteps_tensor = torch.full(size=(batch_size,), fill_value=t_discretized, device=device)
+            action_features = self.action_encoder(actions, timesteps_tensor)
+            if self.config.add_pos_embed:
+                pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
+                pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
+                action_features = action_features + pos_embs
+
+            future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
+            sa_embs = (
+                torch.cat((state_features, future_tokens, action_features), dim=1)
+                if state_features is not None
+                else torch.cat((future_tokens, action_features), dim=1)
+            )
+
+            model_output = self.model(
+                hidden_states=sa_embs,
+                encoder_hidden_states=vl_embs,
+                timestep=timesteps_tensor,
+            )
+            pred = self.action_decoder(model_output)
+
+            pred_velocity = pred[:, -self.action_horizon :]
+            actions = actions + dt * pred_velocity
+        return actions
+
+    @property
+    def device(self):
+        return next(iter(self.parameters())).device
+
+    @property
+    def dtype(self):
+        return next(iter(self.parameters())).dtype
+
+
+def get_action_model(config=None):
+    """
+    Factory: build FlowmatchingActionHead from global framework config.
+    """
+    return FlowmatchingActionHead(full_config=config)
+
+
+# ============================================================================
+# ActionDiT: backward-compatible wrapper that keeps the existing CosmosWAM
+# interface while using GR00T FlowmatchingActionHead internals.
+# ============================================================================
+
+
 class ActionDiT(nn.Module):
+    """
+    Compatibility wrapper around GR00T FlowmatchingActionHead.
+
+    Keeps the original ``ActionDiT`` constructor signature so that
+    ``runtime.py``, training scripts, and evaluation scripts do not need
+    any changes.  Inside ``forward`` we route to GR00T components
+    (action_encoder → DiT → action_decoder) while only consuming the
+    **last** video feature map from the list, matching the GR00T design
+    where a single ``vl_embs`` tensor is fed to the action head.
+    """
+
     def __init__(
         self,
         action_dim: int,
@@ -140,160 +726,55 @@ class ActionDiT(nn.Module):
         video_dim: int = 2048,
         mlp_ratio: float = 4.0,
         actions_per_latent: int = 8,
-        timestep_buckets: int = 1000,
         state_dim: int = 8,
         num_future_tokens: int = 32,
     ):
         super().__init__()
-        self.action_dim = int(action_dim)
-        self.hidden_dim = int(hidden_dim)
-        self.num_layers = int(num_layers)
-        self.video_dim = int(video_dim)
-        self.actions_per_latent = int(actions_per_latent)
-        self.timestep_buckets = int(timestep_buckets)
-        self.state_dim = int(state_dim)
-        self.num_future_tokens = int(num_future_tokens)
+        from types import SimpleNamespace
 
-        self.action_encoder = nn.Sequential(
-            nn.Linear(action_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-        )
+        action_model_cfg = {
+            "action_model_type": "DiT-B",
+            "action_hidden_dim": hidden_dim,
+            "hidden_size": hidden_dim,
+            "add_pos_embed": True,
+            "max_seq_len": 1024,
+            "action_dim": action_dim,
+            "state_dim": state_dim,
+            "future_action_window_size": actions_per_latent - 1,
+            "action_horizon": actions_per_latent,
+            "past_action_window_size": 0,
+            "repeated_diffusion_steps": 1,
+            "noise_beta_alpha": 1.5,
+            "noise_beta_beta": 1.0,
+            "noise_s": 0.999,
+            "num_timestep_buckets": 1000,
+            "num_inference_timesteps": 4,
+            "num_target_vision_tokens": num_future_tokens,
+            "diffusion_model_cfg": {
+                "cross_attention_dim": video_dim,
+                "dropout": 0.2,
+                "final_dropout": True,
+                "interleave_self_attention": True,
+                "norm_type": "ada_norm",
+                "num_layers": num_layers,
+                "output_dim": hidden_dim,
+                "positional_embeddings": None,
+            },
+        }
 
-        # State encoder (like starVLA FlowmatchingActionHead)
-        self.state_encoder = (
-            nn.Sequential(
-                nn.Linear(state_dim, hidden_dim),
-                nn.SiLU(),
-                nn.Linear(hidden_dim, hidden_dim),
-            )
-            if state_dim > 0
-            else None
-        )
+        framework = SimpleNamespace(action_model=action_model_cfg)
+        full_config = SimpleNamespace(framework=framework)
+        self.head = FlowmatchingActionHead(full_config)
 
-        # Future query tokens (like starVLA)
-        self.future_tokens = nn.Embedding(num_future_tokens, hidden_dim)
-        nn.init.normal_(self.future_tokens.weight, mean=0.0, std=0.02)
-
-        # Timestep embedding: sinusoidal + MLP
-        self.timestep_proj = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-        )
-
-        # Video context projection + positional encoding
-        self.video_in = nn.Sequential(
-            nn.LayerNorm(video_dim),
-            nn.Linear(video_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-        )
-
-        self.pos_embedding = nn.Embedding(512, hidden_dim)  # max 512 actions
-
-        self.blocks = nn.ModuleList([
-            ActionBlock(hidden_dim, num_heads, hidden_dim, mlp_ratio)
-            for _ in range(num_layers)
-        ])
-
-        self.out_norm = nn.LayerNorm(hidden_dim, eps=1e-6)
-        self.action_out = nn.Linear(hidden_dim, action_dim)
-
-        self._cached_masks: dict = {}
-
-    @property
-    def requires_video_hidden_layers(self) -> bool:
-        return True
-
-    def _build_token_timestep(
-        self,
-        timestep: torch.Tensor,
-        batch_size: int,
-        seq_len: int,
-        device: torch.device,
-    ) -> torch.Tensor:
-        t = timestep.to(device=device)
-        if t.ndim == 2 and t.shape[1] == 1:
-            t = t[:, 0]
-        t = t.clamp(0.0, 1.0)
-        temb = _sinusoidal_timestep_embedding(t * max(float(self.timestep_buckets - 1), 1.0), self.hidden_dim)
-        # Ensure temb matches timestep_proj weight dtype for mixed precision
-        temb = temb.to(dtype=self.timestep_proj[0].weight.dtype)
-        temb = self.timestep_proj(temb).unsqueeze(1)  # [B, 1, D]
-        return temb
-
-    def _build_video_positional_encoding(
-        self,
-        batch_size: int,
-        num_frames: int,
-        tokens_per_frame: int,
-        device: torch.device,
-        dtype: torch.dtype,
-        spatial_hw: Optional[Tuple[int, int]] = None,
-    ) -> torch.Tensor:
-        d_model = self.hidden_dim
-        frame_idx = torch.arange(num_frames, device=device, dtype=torch.float32)
-        frame_emb = _sinusoidal_position_embedding(frame_idx, d_model).unsqueeze(1)  # [F, 1, D]
-
-        if spatial_hw is not None:
-            h, w = spatial_hw
-            y_idx = torch.arange(h, device=device, dtype=torch.float32)
-            x_idx = torch.arange(w, device=device, dtype=torch.float32)
-            y_emb = _sinusoidal_position_embedding(y_idx, d_model).unsqueeze(1).expand(h, w, d_model)
-            x_emb = _sinusoidal_position_embedding(x_idx, d_model).unsqueeze(0).expand(h, w, d_model)
-            spatial_emb = (y_emb + x_emb).reshape(1, h * w, d_model)
-        else:
-            token_idx = torch.arange(tokens_per_frame, device=device, dtype=torch.float32)
-            spatial_emb = _sinusoidal_position_embedding(token_idx, d_model).unsqueeze(0)
-
-        pos = frame_emb + spatial_emb  # [F, Tpf, D]
-        pos = pos.reshape(1, num_frames * tokens_per_frame, d_model)
-        return pos.expand(batch_size, -1, -1).to(dtype=dtype)
-
-    def _get_self_mask(self, num_actions: int, device: torch.device) -> torch.Tensor:
-        key = (num_actions, self.actions_per_latent, str(device))
-        if key not in self._cached_masks:
-            mask = _build_block_causal_self_mask(
-                seq_len=num_actions,
-                block_size=self.actions_per_latent,
-                device=device,
-            )
-            self._cached_masks[key] = mask
-        return self._cached_masks[key]
-
-    def _encode_video_context(
-        self,
-        video_tokens: torch.Tensor,
-        dtype: torch.dtype,
-    ) -> torch.Tensor:
-        """video_tokens: [B, K, H, W, D] or [B, K*H*W, D]"""
-        if video_tokens.ndim == 5:
-            bsz, num_frames, h, w, hidden_dim = video_tokens.shape
-            tokens = video_tokens.view(bsz, num_frames * h * w, hidden_dim)
-            spatial_hw = (h, w)
-            tokens_per_frame = h * w
-        elif video_tokens.ndim == 3:
-            bsz, num_tokens, hidden_dim = video_tokens.shape
-            tokens = video_tokens
-            spatial_hw = None
-            tokens_per_frame = 1
-            num_frames = num_tokens
-        else:
-            raise ValueError(f"Unexpected video_tokens shape: {video_tokens.shape}")
-
-        # Ensure tokens match video_in weight dtype
-        target_dtype = self.video_in[0].weight.dtype
-        video_ctx = self.video_in(tokens.to(dtype=target_dtype))
-        video_ctx = video_ctx + self._build_video_positional_encoding(
-            batch_size=bsz,
-            num_frames=num_frames,
-            tokens_per_frame=tokens_per_frame,
-            device=video_tokens.device,
-            dtype=dtype,
-            spatial_hw=spatial_hw,
-        )
-        return video_ctx
+        # Expose attributes for downstream code that inspects the head
+        self.action_dim = self.head.action_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.video_dim = video_dim
+        self.actions_per_latent = actions_per_latent
+        self.state_dim = state_dim
+        self.num_future_tokens = num_future_tokens
 
     def forward(
         self,
@@ -302,50 +783,69 @@ class ActionDiT(nn.Module):
         timestep: torch.Tensor,
         state: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if z_action.ndim != 3:
-            raise ValueError(f"Expected z_action [B, L, D], got {tuple(z_action.shape)}")
-        if len(video_tokens) != self.num_layers:
-            raise ValueError(f"Expected {self.num_layers} video layers, got {len(video_tokens)}")
+        """
+        Args:
+            z_action:      Noisy action tensor [B, T, action_dim]
+            video_tokens:  List of video feature maps (one per layer).
+                           We use only the **last** entry, flatten it to
+                           [B, N, D] and treat it as ``vl_embs``.
+            timestep:      Continuous diffusion time in [0, 1].
+                           Shape [B] or [B, 1].
+            state:         Optional proprioception state [B, state_dim].
 
-        bsz, seq_len, _ = z_action.shape
-        device = z_action.device
-        # Get target dtype from model weights
-        target_dtype = self.action_encoder[0].weight.dtype
+        Returns:
+            Predicted action/velocity tensor [B, T, action_dim].
+        """
+        if not video_tokens:
+            raise ValueError("video_tokens list must not be empty")
 
-        # Ensure timestep is float32 for sinusoidal embedding
-        temb = self._build_token_timestep(timestep, batch_size=bsz, seq_len=seq_len, device=device)
+        vl_embs = video_tokens[-1]
+        if vl_embs.ndim == 5:
+            bsz, nf, h, w, d = vl_embs.shape
+            vl_embs = vl_embs.view(bsz, nf * h * w, d)
+        elif vl_embs.ndim != 3:
+            raise ValueError(f"Unexpected video token shape: {vl_embs.shape}")
 
-        # Encode action
-        x = self.action_encoder(z_action.to(dtype=target_dtype))
-        pos_ids = torch.arange(seq_len, dtype=torch.long, device=device)
-        x = x + self.pos_embedding(pos_ids).unsqueeze(0) + temb
+        # Continuous time -> discrete timestep buckets
+        t = timestep.float()
+        if t.ndim > 1:
+            t = t.view(t.shape[0], -1)[:, 0]
+        t_discretized = (
+            t * self.head.num_timestep_buckets
+        ).long().clamp(0, self.head.num_timestep_buckets - 1)
 
-        # Add future query tokens (like starVLA)
-        if self.num_future_tokens > 0:
-            future = self.future_tokens.weight.unsqueeze(0).expand(bsz, -1, -1).to(dtype=target_dtype)
-            x = torch.cat([future, x], dim=1)
+        # GR00T action encoding of the *noisy* trajectory
+        action_features = self.head.action_encoder(z_action, t_discretized)
 
-        # Add state encoding (like starVLA)
-        if self.state_encoder is not None and state is not None:
-            state_feat = self.state_encoder(state.to(dtype=target_dtype)).unsqueeze(1)  # [B, 1, D]
-            x = torch.cat([state_feat, x], dim=1)
+        if self.head.config.add_pos_embed:
+            pos_ids = torch.arange(
+                action_features.shape[1], dtype=torch.long, device=z_action.device
+            )
+            pos_embs = self.head.position_embedding(pos_ids).unsqueeze(0)
+            action_features = action_features + pos_embs
 
-        self_mask = self._get_self_mask(num_actions=x.shape[1], device=device)
+        # State encoding
+        state_features = None
+        if self.head.state_encoder is not None and state is not None:
+            state_2d = state if state.ndim == 2 else state.squeeze(1)
+            state_features = self.head.state_encoder(state_2d).unsqueeze(1)
 
-        for block, layer_video_tokens in zip(self.blocks, video_tokens):
-            video_ctx = self._encode_video_context(layer_video_tokens, dtype=target_dtype)
-            x = block(x, temb.squeeze(1).to(dtype=target_dtype), video_ctx, self_mask=self_mask)
+        # Future query tokens (like GR00T)
+        future_tokens = self.head.future_tokens.weight.unsqueeze(0).expand(
+            z_action.shape[0], -1, -1
+        )
 
-        x = self.out_norm(x)
-        pred = self.action_out(x)
+        if state_features is not None:
+            sa_embs = torch.cat([state_features, future_tokens, action_features], dim=1)
+        else:
+            sa_embs = torch.cat([future_tokens, action_features], dim=1)
 
-        # Slice out only the action portion (skip state + future tokens)
-        skip_len = 0
-        if self.state_encoder is not None:
-            skip_len += 1
-        if self.num_future_tokens > 0:
-            skip_len += self.num_future_tokens
-        if skip_len > 0:
-            pred = pred[:, skip_len:]
-
-        return pred
+        # DiT forward with cross-attention to vision
+        model_output = self.head.model(
+            hidden_states=sa_embs,
+            encoder_hidden_states=vl_embs,
+            timestep=t_discretized,
+        )
+        pred = self.head.action_decoder(model_output)
+        pred_actions = pred[:, -z_action.shape[1] :]
+        return pred_actions
