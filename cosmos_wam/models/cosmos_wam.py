@@ -178,6 +178,7 @@ class CosmosWAM(nn.Module):
         first_frame_pixels: torch.Tensor,
         action_horizon: int,
         context: torch.Tensor,
+        proprio: torch.Tensor,
         num_inference_steps: int = 20,
     ) -> torch.Tensor:
         """Inference: given first frame(s), predict action sequence.
@@ -202,7 +203,12 @@ class CosmosWAM(nn.Module):
             elif first_frame_pixels.shape[1] in (2, 3):
                 # [B, num_cameras, C, H, W] multi-view -> permute to temporal
                 # Assume num_cameras is small (2 or 3), treat cameras as temporal frames
-                two_view = first_frame_pixels.permute(0, 2, 1, 3, 4)  # [B, C, num_cameras, H, W]
+                two_view = first_frame_pixels  # [B, C, num_cameras, H, W]
+                view0 = two_view[:, :, 0:1, :, :]   # [B, 3, 1, H, W]
+                view1 = two_view[:, :, 1:2, :, :]   # [B, 3, 1, H, W]
+                view1_repeated = view1.repeat(1, 1, 4, 1, 1)  # [B, 3, 4, H, W]
+                # Concat: 1 + 4 = 5 frames
+                two_view = torch.cat([view0, view1_repeated], dim=2)  # [B, 3, 5, H, W]
             else:
                 raise ValueError(
                     f"Unexpected 5D first_frame_pixels shape {tuple(first_frame_pixels.shape)}. "
@@ -219,7 +225,6 @@ class CosmosWAM(nn.Module):
         if two_view.shape[2] < 4:
             repeat_factor = (4 + two_view.shape[2] - 1) // two_view.shape[2]
             two_view = two_view.repeat(1, 1, repeat_factor, 1, 1)[:, :, :4, :, :]
-        
         # VAE encode
         latents = self.vae.encode(two_view)  # [B, C, T_latent, H, W]
 
@@ -234,20 +239,33 @@ class CosmosWAM(nn.Module):
 
         # Run dit once to populate video features cache
         context_dtype = next(self.dit.parameters()).dtype
-        _ = self.dit(
+        _, hidden_list = self.dit(
             x_B_C_T_H_W=latents,
             timesteps_B_T=torch.zeros(B, 1, device=device, dtype=latents.dtype),
             crossattn_emb=context.to(dtype=context_dtype),
             intermediate_feature_ids=list(range(self.dit.num_blocks)),
         )
-        video_cond_cache = [self._video_features[14 + i].detach().clone() for i in range(self.action_head.num_layers)]
-        
+        video_cond_list: List[torch.Tensor] = []
+        T_lat, H_lat, W_lat = latents.shape[2], latents.shape[3], latents.shape[4]
+        H_int = H_lat // self.dit.patch_spatial
+        W_int = W_lat // self.dit.patch_spatial
+        T_int = T_lat // self.dit.patch_temporal
+        for action_layer_idx in range(self.action_head.num_layers):
+            cosmos_layer_idx = 14 + action_layer_idx
+            layer_hidden = hidden_list[cosmos_layer_idx]  # [B, T*H*W, D]
+            B_actual, N, D_vid = layer_hidden.shape
+            assert N == T_int * H_int * W_int, (
+                f"Hidden state size mismatch: N={N}, expected {B_actual}*{T_int}*{H_int}*{W_int}"
+            )
+            layer_grid = layer_hidden.view(B_actual, T_int, H_int, W_int, D_vid)
+            video_cond_list.append(layer_grid)
+
         # Action flow matching denoising
         action = torch.randn(B, action_horizon, self.action_head.action_dim, device=device)
         for i in range(num_inference_steps):
             # Use 1-t to match training: t=0 is noise, t=1 is action
             t = torch.full((B,), i / num_inference_steps, device=device, dtype=torch.float32)
-            pred = self.action_head(action, video_cond_cache, t, state=None)
+            pred = self.action_head(action, video_cond_list, t, state=proprio)
             # Flow from noise to action: dx/dt = pred
             dt = 1.0 / num_inference_steps
             action = action + dt * pred

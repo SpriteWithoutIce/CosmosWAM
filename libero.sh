@@ -2,7 +2,8 @@
 # Cosmos-WAM LIBERO Evaluation Script (支持多 GPU 并行 + Task 循环)
 
 # 从命令行接收参数
-GPU_ID=${1:-0}      # 第一个参数：GPU 编号 (0-3)，默认 0
+TASK_SUITE=${1:-libero_spatial}  # 第一个参数：task suite，默认 libero_spatial
+GPU_ID=${2:-0}                   # 第二个参数：GPU 编号 (0-3)，默认 0
 
 START_TASK=0
 END_TASK=9
@@ -17,10 +18,9 @@ DATASET_STATS="/home/jwhe/linyihan/CosmosWAM/outputs/dataset_stats.json"
 export LIBERO_PATH="${LIBERO_PATH:-/home/jwhe/linyihan/LIBERO}"
 
 # 固定配置
-TASK_SUITE="libero_object"
 NUM_TRIALS=10
-NUM_INFERENCE_STEPS=20
-REPLAN_STEPS=4
+NUM_INFERENCE_STEPS=10
+REPLAN_STEPS=8
 ACTION_HORIZON=8
 
 # 文本编码器配置
