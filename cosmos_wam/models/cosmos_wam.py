@@ -178,6 +178,7 @@ class CosmosWAM(nn.Module):
         first_frame_pixels: torch.Tensor,
         action_horizon: int,
         context: torch.Tensor,
+        proprio: Optional[torch.Tensor] = None,
         num_inference_steps: int = 20,
     ) -> torch.Tensor:
         """Inference: given first frame(s), predict action sequence.
@@ -190,6 +191,7 @@ class CosmosWAM(nn.Module):
         """
         self.eval()
         device = first_frame_pixels.device
+        action_dtype = next(self.action_head.parameters()).dtype
 
         # Normalize input to two-view temporal format [B, C, 2, H, W]
         if first_frame_pixels.ndim == 4:
@@ -241,13 +243,17 @@ class CosmosWAM(nn.Module):
             intermediate_feature_ids=list(range(self.dit.num_blocks)),
         )
         video_cond_cache = [self._video_features[14 + i].detach().clone() for i in range(self.action_head.num_layers)]
+        state = None
+        if proprio is not None and self.action_head.state_dim > 0:
+            proprio = proprio.to(device=device, dtype=action_dtype)
+            state = proprio if proprio.ndim == 2 else proprio[:, 0, :]
         
         # Action flow matching denoising
-        action = torch.randn(B, action_horizon, self.action_head.action_dim, device=device)
+        action = torch.randn(B, action_horizon, self.action_head.action_dim, device=device, dtype=action_dtype)
         for i in range(num_inference_steps):
             # Use 1-t to match training: t=0 is noise, t=1 is action
             t = torch.full((B,), i / num_inference_steps, device=device, dtype=torch.float32)
-            pred = self.action_head(action, video_cond_cache, t, state=None)
+            pred = self.action_head(action, video_cond_cache, t, state=state)
             # Flow from noise to action: dx/dt = pred
             dt = 1.0 / num_inference_steps
             action = action + dt * pred
