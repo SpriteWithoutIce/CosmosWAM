@@ -114,10 +114,8 @@ trainer:
   learning_rate: 1.0e-05      # DiT backbone lr (like starVLA)
   action_learning_rate: 1.0e-04  # Action head lr (like starVLA)
   weight_decay: 1.0e-08       # Match starVLA optimizer weight_decay
-  batch_size: 8
-  num_workers: 2
-  prefetch_factor: 1
-  persistent_workers: false
+  batch_size: 32
+  num_workers: 16
   num_epochs: 10
   max_steps: null
   log_every: 10
@@ -138,7 +136,7 @@ trainer:
     eps: 1.0e-08
   
   swanlab:
-    enabled: false
+    enabled: true
     project: "cosmos-wam"
     name: "4suites_f2_b32_encoder"
   
