@@ -762,7 +762,7 @@ class ActionDiT(nn.Module):
             },
         }
 
-        framework = SimpleNamespace(action_model=action_model_cfg)
+        framework = SimpleNamespace(action_model=SimpleNamespace(**action_model_cfg))
         full_config = SimpleNamespace(framework=framework)
         self.head = FlowmatchingActionHead(full_config)
 
