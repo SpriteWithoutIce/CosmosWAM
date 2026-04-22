@@ -52,6 +52,8 @@ model:
     video_dim: 2048
     mlp_ratio: 4.0
     actions_per_latent: 8
+    state_dim: 8
+    num_future_tokens: 32
 
 # Data configuration (for processor and normalization)
 # MUST MATCH TRAINING CONFIGURATION

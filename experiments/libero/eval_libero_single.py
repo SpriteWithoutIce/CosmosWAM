@@ -314,7 +314,6 @@ def _predict_action_chunk(
         online_encoder=online_encoder
     )
     context = context.unsqueeze(0).to(device=device)
-
     # Add time dimension: [B,C,H,W] -> [B,C,T,H,W] where T=1
     if image.ndim == 4:
         image = image.unsqueeze(2)  # Add T dimension
@@ -326,6 +325,7 @@ def _predict_action_chunk(
             action_horizon=action_horizon,
             context=context,
             num_inference_steps=num_inference_steps,
+            proprio=proprio.to(device=device),
         )
 
     # Denormalize action

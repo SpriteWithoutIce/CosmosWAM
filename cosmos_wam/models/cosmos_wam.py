@@ -203,6 +203,7 @@ class CosmosWAM(nn.Module):
         first_frame_pixels: torch.Tensor,
         action_horizon: int,
         context: torch.Tensor,
+        proprio: torch.Tensor,
         num_inference_steps: int = 20,
     ) -> torch.Tensor:
         """Inference: given condition frame(s), predict action sequence.
@@ -228,41 +229,75 @@ class CosmosWAM(nn.Module):
         B = video_input.shape[0]
 
         # VAE temporal conv requires T >= 4; replicate if needed
-        if video_input.shape[2] < 4:
-            repeat_factor = (4 + video_input.shape[2] - 1) // video_input.shape[2]
-            video_input = video_input.repeat(1, 1, repeat_factor, 1, 1)[:, :, :4, :, :]
-        
+        if video_input.shape[2] <= 4:
+            repeat_factor = (5 + video_input.shape[2] - 1) // video_input.shape[2]
+            video_input = video_input.repeat(1, 1, repeat_factor, 1, 1)[:, :, :5, :, :]
         # VAE encode
         latents = self.vae.encode(video_input)  # [B, C, T_latent, H, W]
-
-        # Pad latents from 16 to 18 channels to match Cosmos checkpoint
-        if latents.shape[1] == 16:
-            padding = torch.zeros(
-                latents.shape[0], 2, 
-                *latents.shape[2:], 
+        latents = latents[:,:,0:1,:,:]
+        T_lat = latents.shape[2]
+        TARGET_T_LAT = 3
+        if T_lat < TARGET_T_LAT:
+            # condition frame是index 0，后面的generation frames用noise填充
+            noise_frames = torch.randn(
+                B, 16, TARGET_T_LAT - T_lat, 
+                latents.shape[3], latents.shape[4],
                 device=device, dtype=latents.dtype
             )
-            latents = torch.cat([latents, padding], dim=1)  # [B, 18, T_latent, H, W]
+            latents_16ch = torch.cat([latents, noise_frames], dim=2)  # [B, 16, 3, H, W]
+        else:
+            latents_16ch = latents
+        # Padding mask channels：condition frame=1, generation frames=0（或者按训练逻辑）
+        padding = torch.zeros(
+            B, 2, TARGET_T_LAT,
+            latents_16ch.shape[3], latents_16ch.shape[4],
+            device=device, dtype=latents.dtype
+        )
+        noisy_input = torch.cat([latents_16ch, padding], dim=1)  # [B, 18, 3, H, W]
+        # timestep：用 t=0.5 模拟训练分布中间态（generation frames是half-noisy的）
+        # 也可以用 t=1.0 对应 pure noise 状态
+        t_infer = torch.full((B,), 0.5, device=device, dtype=latents.dtype)
+        
+        # # Pad latents from 16 to 18 channels to match Cosmos checkpoint
+        # if latents.shape[1] == 16:
+        #     padding = torch.zeros(
+        #         latents.shape[0], 2, 
+        #         *latents.shape[2:], 
+        #         device=device, dtype=latents.dtype
+        #     )
+        #     latents = torch.cat([latents, padding], dim=1)  # [B, 18, T_latent, H, W]
 
         # Run dit clean pass (t=0) to extract features from condition frame
         context_dtype = next(self.dit.parameters()).dtype
-        _ = self.dit(
-            x_B_C_T_H_W=latents,
-            timesteps_B_T=torch.zeros(B, 1, device=device, dtype=latents.dtype),
+        pred, hidden_list = self.dit(
+            x_B_C_T_H_W=noisy_input,
+            timesteps_B_T=t_infer,
             crossattn_emb=context.to(dtype=context_dtype),
             intermediate_feature_ids=list(range(self.dit.num_blocks)),
         )
-        # Only take condition frame (first temporal position) hidden states
-        video_cond_cache = []
-        for i in range(self.action_head.num_layers):
-            feat = self._video_features[14 + i]  # [B, T_int, H_int, W_int, D]
-            video_cond_cache.append(feat[:, 0:1, ...].detach().clone())
+        # -------- Extract hidden states for action head (only condition frame) --------
+        video_cond_list: List[torch.Tensor] = []
+        H_lat, W_lat = latents.shape[3], latents.shape[4]
+        H_int = H_lat // self.dit.patch_spatial
+        W_int = W_lat // self.dit.patch_spatial
+        T_int = TARGET_T_LAT // self.dit.patch_temporal
+        for action_layer_idx in range(self.action_head.num_layers):
+            cosmos_layer_idx = 14 + action_layer_idx
+            layer_hidden = hidden_list[cosmos_layer_idx]  # [B, T*H*W, D]
+            B_actual, N, D_vid = layer_hidden.shape
+            assert N == T_int * H_int * W_int, (
+                f"Hidden state size mismatch: N={N}, expected {T_int}*{H_int}*{W_int}={T_int * H_int * W_int}"
+            )
+            layer_grid = layer_hidden.view(B_actual, T_int, H_int, W_int, D_vid)
+            # Only take condition frame (first temporal position)
+            cond_grid = layer_grid[:, 0:1, ...]  # [B, 1, H, W, D]
+            video_cond_list.append(cond_grid)
         
         # Action flow matching denoising
         action = torch.randn(B, action_horizon, self.action_head.action_dim, device=device)
         for i in range(num_inference_steps):
             t = torch.full((B,), i / num_inference_steps, device=device, dtype=torch.float32)
-            pred = self.action_head(action, video_cond_cache, t, state=None)
+            pred = self.action_head(action, video_cond_list, t, state=proprio)
             dt = 1.0 / num_inference_steps
             action = action + dt * pred
         return action
