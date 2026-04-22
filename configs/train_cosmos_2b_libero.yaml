@@ -114,9 +114,9 @@ trainer:
   learning_rate: 1.0e-05      # DiT backbone lr (like starVLA)
   action_learning_rate: 1.0e-04  # Action head lr (like starVLA)
   weight_decay: 1.0e-08       # Match starVLA optimizer weight_decay
-  batch_size: 64
+  batch_size: 32
   num_workers: 16
-  num_epochs: 10
+  num_epochs: 20
   max_steps: null
   log_every: 10
   save_every: 2000
@@ -125,6 +125,8 @@ trainer:
   max_grad_norm: 1.0
   seed: ${seed}
   resume: false
+  resume_from_checkpoint: /home/jwhe/linyihan/CosmosWAM/outputs/cosmos_2b_libero_20260420_141318/checkpoints/final.pt
+  resume_reset_step: false # true: 加载权重但从 step=0 开始计数；false: 恢复 step 和 epoch
   mixed_precision: "bf16"
   
   lr_schedule: "cosine"

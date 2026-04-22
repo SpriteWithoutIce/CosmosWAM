@@ -21,7 +21,7 @@ model:
   
   dit_config:
     max_img_h: 224
-    max_img_w: 448       # 2 cameras concatenated horizontally (224 * 2)
+    max_img_w: 224       # 2 cameras concatenated horizontally (224 * 2)
     max_frames: 128
     in_channels: 18
     out_channels: 16
@@ -52,6 +52,8 @@ model:
     video_dim: 2048
     mlp_ratio: 4.0
     actions_per_latent: 8
+    state_dim: 8
+    num_future_tokens: 32
 
 # Data configuration (for processor and normalization)
 # MUST MATCH TRAINING CONFIGURATION
@@ -75,14 +77,14 @@ data:
         - key: default
           raw_shape: 8
           shape: 8
-    num_frames: 33
+    num_frames: 9
     global_sample_stride: 1
-    action_video_freq_ratio: 4
-    video_size: [224, 448]  # 2 cameras: 224x224 each, concatenated horizontally -> 224x448
+    action_video_freq_ratio: 1
+    video_size: [224, 224]  # 2 cameras: 224x224 each, concatenated horizontally -> 224x448
     val_set_proportion: 0.0
     is_training_set: false
     skip_padding_as_possible: false
-    concat_multi_camera: "horizontal"  # Concatenate 2 cameras horizontally
+    concat_multi_camera: "none"  # Concatenate 2 cameras horizontally
     processor:
       _target_: cosmos_wam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
       shape_meta: ${data.train.shape_meta}
@@ -134,7 +136,7 @@ EVALUATION:
   device: cuda
   
   # Action horizon (number of actions to predict)
-  action_horizon: 32
+  action_horizon: 8
   
   # Replan steps (execute this many actions before replanning)
   replan_steps: 5

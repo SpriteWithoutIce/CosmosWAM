@@ -153,13 +153,18 @@ def _obs_to_model_input(
             rgb = np.concatenate([primary, wrist], axis=1)
         elif concatenation == "vertical":
             rgb = np.concatenate([primary, wrist], axis=0)
+        elif concatenation == "none":
+            rgb = np.stack([primary, wrist], axis=0)
+            pass
         else:
             raise ValueError(f"Invalid concat_multi_camera: {concatenation}")
     else:
         raise ValueError(f"LIBERO eval supports num_output_cameras in [1, 2], got {num_cameras}.")
-
     # Convert to tensor and normalize to [-1, 1]
-    x = torch.tensor(rgb).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
+    if rgb.ndim == 4:
+        x = torch.tensor(rgb).permute(3, 0, 1, 2).unsqueeze(0).to(device=device, dtype=dtype)
+    else:
+        x = torch.tensor(rgb).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
     x = x * (2.0 / 255.0) - 1.0
 
     proprio = _normalize_proprio(_extract_sim_state(obs), processor)
@@ -315,9 +320,9 @@ def _predict_action_chunk(
     )
     context = context.unsqueeze(0).to(device=device)
 
-    # Add time dimension: [B,C,H,W] -> [B,C,T,H,W] where T=1
-    if image.ndim == 4:
-        image = image.unsqueeze(2)  # Add T dimension
+    # # Add time dimension: [B,C,H,W] -> [B,C,T,H,W] where T=1
+    # if image.ndim == 4:
+    #     image = image.unsqueeze(2)  # Add T dimension
     
     # Run inference
     with torch.no_grad():
@@ -326,6 +331,7 @@ def _predict_action_chunk(
             action_horizon=action_horizon,
             context=context,
             num_inference_steps=num_inference_steps,
+            proprio=proprio.to(device=device),
         )
 
     # Denormalize action
@@ -536,6 +542,8 @@ def eval_single_process(cfg: DictConfig):
         video_dim=cfg.model.action_head.video_dim,
         mlp_ratio=cfg.model.action_head.get("mlp_ratio", 4.0),
         actions_per_latent=cfg.model.action_head.get("actions_per_latent", 8),
+        state_dim=cfg.model.action_head.get("state_dim", 8),
+        num_future_tokens=cfg.model.action_head.get("num_future_tokens", 32),
     )
     
     model = CosmosWAM(
@@ -551,7 +559,7 @@ def eval_single_process(cfg: DictConfig):
     ckpt = torch.load(cfg.ckpt, map_location="cpu")
     state_dict = ckpt["model"] if "model" in ckpt else ckpt
     filtered_state = {k: v for k, v in state_dict.items() if not k.startswith("vae.")}
-    model.load_state_dict(filtered_state, strict=False)
+    model.load_state_dict(filtered_state, strict=True)
     logging.info("Loaded checkpoint: %s", cfg.ckpt)
 
     # Setup processor
