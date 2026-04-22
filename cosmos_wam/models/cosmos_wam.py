@@ -167,37 +167,66 @@ class CosmosWAM(nn.Module):
 
         # Encode first frame
         latents = self.vae.encode(first_frame_pixels)  # [B, C, T_latent, H, W]
-        first_frame_latent = latents[:, :, :1, :, :]   # [B, C, 1, H, W]
+        latents = latents[:, :, :1, :, :]   # [B, C, 1, H, W]
 
-        # Pad latents from 16 to 18 channels to match Cosmos checkpoint
-        if first_frame_latent.shape[1] == 16:
-            padding = torch.zeros(
-                first_frame_latent.shape[0], 2, 
-                *first_frame_latent.shape[2:], 
-                device=device, dtype=first_frame_latent.dtype
-            )
-            first_frame_latent = torch.cat([first_frame_latent, padding], dim=1)  # [B, 18, 1, H, W]
+        # # Pad latents from 16 to 18 channels to match Cosmos checkpoint
+        # if first_frame_latent.shape[1] == 16:
+        #     padding = torch.zeros(
+        #         first_frame_latent.shape[0], 2, 
+        #         *first_frame_latent.shape[2:], 
+        #         device=device, dtype=first_frame_latent.dtype
+        #     )
+        #     first_frame_latent = torch.cat([first_frame_latent, padding], dim=1)  # [B, 18, 1, H, W]
 
-        # Build minimal latent with only conditional frame to trigger hooks
-        dummy_latents = first_frame_latent
+        # # Build minimal latent with only conditional frame to trigger hooks
+        # dummy_latents = first_frame_latent
 
+        T_lat = latents.shape[2]
+        TARGET_T_LAT = 3
+        noise_frames = torch.randn(
+            B, 16, TARGET_T_LAT - T_lat, 
+            latents.shape[3], latents.shape[4],
+            device=device, dtype=latents.dtype
+        )
+        latents_16ch = torch.cat([latents, noise_frames], dim=2)
+        # Padding mask channels：condition frame=1, generation frames=0（或者按训练逻辑）
+        padding = torch.zeros(
+            B, 2, TARGET_T_LAT,
+            latents_16ch.shape[3], latents_16ch.shape[4],
+            device=device, dtype=latents.dtype
+        )
+        noisy_input = torch.cat([latents_16ch, padding], dim=1)  # [B, 18, 3, H, W]
+        # timestep：用 t=0.5 模拟训练分布中间态（generation frames是half-noisy的）
+        # 也可以用 t=1.0 对应 pure noise 状态
+        t_infer = torch.full((B,), 0.5, device=device, dtype=latents.dtype)
         # Run dit once to populate video features cache
         # Ensure context matches model dtype
         context_dtype = next(self.dit.parameters()).dtype
-        _ = self.dit(
-            x_B_C_T_H_W=dummy_latents,
-            timesteps_B_T=torch.zeros(B, 1, device=device, dtype=latents.dtype),
+        _, hidden_list = self.dit(
+            x_B_C_T_H_W=noisy_input,
+            timesteps_B_T=t_infer,
             crossattn_emb=context.to(dtype=context_dtype),
             intermediate_feature_ids=list(range(self.dit.num_blocks)),
         )
-        video_cond_cache = [self._video_features[14 + i].detach().clone() for i in range(self.action_head.num_layers)]
-        
+        video_cond_list: List[torch.Tensor] = []
+        for action_layer_idx in range(self.action_head.num_layers):
+            cosmos_layer_idx = 14 + action_layer_idx
+            layer_hidden = hidden_list[cosmos_layer_idx]  # [B, T*H*W, D]
+            # Reshape back to [B, T, H, W, D] using latent shape
+            T_lat, H_lat, W_lat = latents_16ch.shape[2], latents_16ch.shape[3], latents_16ch.shape[4]
+            B_actual, N, D_vid = layer_hidden.shape
+            H_int = H_lat // self.dit.patch_spatial
+            W_int = W_lat // self.dit.patch_spatial
+            T_int = N // (H_int * W_int)
+            layer_grid = layer_hidden.view(B_actual, T_int, H_int, W_int, D_vid)
+            cond_grid = layer_grid[:, : self.num_cond_frames, :, :, :]  # [B, K, H_int, W_int, D]
+            video_cond_list.append(cond_grid)
         # Action flow matching denoising
         action = torch.randn(B, action_horizon, self.action_head.action_dim, device=device)
         for i in range(num_inference_steps):
             # Use 1-t to match training: t=0 is noise, t=1 is action
             t = torch.full((B,), i / num_inference_steps, device=device, dtype=torch.float32)
-            pred = self.action_head(action, video_cond_cache, t)
+            pred = self.action_head(action, video_cond_list, t)
             # Flow from noise to action: dx/dt = pred
             dt = 1.0 / num_inference_steps
             action = action + dt * pred
